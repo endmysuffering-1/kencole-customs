@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { recordAudit } from "@/lib/audit";
 import { cents, money } from "@/lib/money";
@@ -156,7 +157,9 @@ export async function estimateShipment(shipmentId: string): Promise<LandedCostRe
 
   await db.shipment.update({
     where: { id: shipmentId },
-    data: { estimateJson: result as never, estimatedAt: new Date() },
+    // LandedCostResult is an interface, so it has no implicit index signature and
+    // does not structurally satisfy InputJsonValue. It is plain JSON at runtime.
+    data: { estimateJson: result as unknown as Prisma.InputJsonValue, estimatedAt: new Date() },
   });
 
   return result;
