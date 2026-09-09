@@ -1,7 +1,6 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { PrismaClient } from "@prisma/client";
 
 // `prisma migrate dev` / `prisma db seed` load .env themselves before running this
 // script, but a plain `tsx prisma/seed.ts` (npm run db:seed) does not — so load it
@@ -23,8 +22,14 @@ import { rankSuggestions, suggestFromKeywords, type KeywordRule } from "@/lib/do
 import { canTransition, type ShipmentStatus, type TransitionGuardContext } from "@/lib/domain/shipment-state";
 import { detectExceptions, type ExceptionInput } from "@/lib/domain/exceptions";
 import { loadPricingRules, loadRateBook } from "@/lib/services/rate-book";
-
-const prisma = new PrismaClient();
+import {
+  nextInvoiceReference,
+  nextQuoteReference,
+  nextShipmentReference,
+} from "@/lib/services/references";
+// The same client the app uses, so seeded references advance the same counters
+// the running application allocates from.
+import { db as prisma } from "@/lib/db";
 
 /**
  * Every RateRule below is illustrative dev data, not a Bahamian tariff rate.
@@ -194,7 +199,7 @@ async function issueQuoteAndInvoice(input: {
 
   const quote = await prisma.quote.create({
     data: {
-      reference: `Q-${input.shipmentReference}-1`,
+      reference: await nextQuoteReference(input.shipmentId, input.shipmentReference),
       shipmentId: input.shipmentId,
       status: input.quoteStatus,
       customsValue: input.estimateResult.customsValue,
@@ -220,7 +225,7 @@ async function issueQuoteAndInvoice(input: {
   const total = cents(money(quote.governmentTotal).plus(money(quote.brokerTotal))).toFixed(2);
   const invoice = await prisma.invoice.create({
     data: {
-      reference: `INV-${input.shipmentReference}-1`,
+      reference: await nextInvoiceReference(input.shipmentId, input.shipmentReference),
       shipmentId: input.shipmentId,
       quoteId: quote.id,
       businessId: input.businessId,
@@ -497,7 +502,10 @@ async function main() {
 
   // ─────────────────────────────── Shipments ───────────────────────────────────
   let shipmentSeq = 0;
-  const nextReference = () => `KCB-2026-${String(++shipmentSeq).padStart(6, "0")}`;
+  const nextReference = async () => {
+    shipmentSeq += 1;
+    return nextShipmentReference();
+  };
 
   // Shipment A — a consumer's shipment moments after starting, nothing done yet.
   {
@@ -514,7 +522,7 @@ async function main() {
       { businessId: null, importType: "PERSONAL" },
     );
 
-    const reference = nextReference();
+    const reference = await nextReference();
     const shipment = await prisma.shipment.create({
       data: {
         reference, ownerId: consumer2.id, importType: "PERSONAL", freightMode: "AIR",
@@ -565,7 +573,7 @@ async function main() {
       { businessId: business.id, importType: "COMMERCIAL", planCode: "BUSINESS_PRO", brokerageDiscount: businessPro.brokerageDiscount.toString(), deliveryDiscount: businessPro.deliveryDiscount.toString() },
     );
 
-    const reference = nextReference();
+    const reference = await nextReference();
     const shipment = await prisma.shipment.create({
       data: {
         reference, ownerId: bizUser.id, businessId: business.id, importType: "COMMERCIAL", freightMode: "SEA",
@@ -656,7 +664,7 @@ async function main() {
       { businessId: null, importType: "PERSONAL", planCode: "CONSUMER_PLUS", brokerageDiscount: consumerPlus.brokerageDiscount.toString(), deliveryDiscount: consumerPlus.deliveryDiscount.toString() },
     );
 
-    const reference = nextReference();
+    const reference = await nextReference();
     const shipment = await prisma.shipment.create({
       data: {
         reference, ownerId: consumer1.id, importType: "PERSONAL", freightMode: "COURIER",
@@ -765,7 +773,7 @@ async function main() {
       { businessId: business.id, importType: "COMMERCIAL", planCode: "BUSINESS_PRO", brokerageDiscount: businessPro.brokerageDiscount.toString(), deliveryDiscount: businessPro.deliveryDiscount.toString() },
     );
 
-    const reference = nextReference();
+    const reference = await nextReference();
     const shipment = await prisma.shipment.create({
       data: {
         reference, ownerId: bizUser.id, businessId: business.id, importType: "COMMERCIAL", freightMode: "SEA",

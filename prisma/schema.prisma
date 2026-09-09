@@ -871,3 +871,16 @@ model AuditLog {
   @@index([entityType, entityId])
   @@index([actorId, createdAt])
 }
+
+// ─────────────────────────────── Reference numbers ───────────────────────────
+
+/// Monotonic counters behind the human-readable references (KCB-2026-000417).
+/// Deriving the next number from a COUNT of existing rows hands the same number
+/// to two concurrent callers, and re-issues a number after a deletion. These
+/// references go on customs entries and get read to customers over the phone, so
+/// a number is burnt once used and never returned to the pool.
+model ReferenceCounter {
+  key       String   @id
+  last      Int
+  updatedAt DateTime @updatedAt
+}

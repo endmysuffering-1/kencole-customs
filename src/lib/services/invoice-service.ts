@@ -2,6 +2,7 @@ import { db } from "@/lib/db";
 import { recordAudit } from "@/lib/audit";
 import { cents, money } from "@/lib/money";
 import { DomainError } from "./shipment-service";
+import { nextInvoiceReference } from "./references";
 
 /**
  * Invoicing.
@@ -18,7 +19,7 @@ export async function issueInvoiceForQuote(quoteId: string, actorId: string) {
     where: { id: quoteId },
     include: {
       charges: { include: { chargeType: true } },
-      shipment: { include: { owner: true, business: true, invoices: true } },
+      shipment: { include: { owner: true, business: true } },
     },
   });
   if (!quote) throw new DomainError("Quote not found.", 404);
@@ -27,7 +28,7 @@ export async function issueInvoiceForQuote(quoteId: string, actorId: string) {
   }
 
   const shipment = quote.shipment;
-  const reference = `INV-${shipment.reference}-${shipment.invoices.length + 1}`;
+  const reference = await nextInvoiceReference(shipment.id, shipment.reference);
 
   const lines = quote.charges
     .sort((a, b) => a.chargeType.sortOrder - b.chargeType.sortOrder)

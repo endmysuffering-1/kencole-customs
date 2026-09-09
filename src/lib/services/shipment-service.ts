@@ -13,6 +13,7 @@ import { canTransition, type ShipmentStatus } from "@/lib/domain/shipment-state"
 import { detectExceptions } from "@/lib/domain/exceptions";
 import { readyForDeclaration } from "@/lib/domain/classification";
 import { loadPricingRules, loadRateBook } from "./rate-book";
+import { nextQuoteReference, nextShipmentReference } from "./references";
 import type { ShipmentInput } from "@/lib/validation/schemas";
 import { notify } from "@/lib/providers/notifications";
 
@@ -21,15 +22,6 @@ export class DomainError extends Error {
     super(message);
     this.name = "DomainError";
   }
-}
-
-/** KCB-2026-000417. Sequential per year so a customer can read it over the phone. */
-export async function nextReference(prefix = "KCB"): Promise<string> {
-  const year = new Date().getFullYear();
-  const count = await db.shipment.count({
-    where: { createdAt: { gte: new Date(`${year}-01-01T00:00:00Z`) } },
-  });
-  return `${prefix}-${year}-${String(count + 1).padStart(6, "0")}`;
 }
 
 export async function createShipment(input: {
@@ -59,7 +51,7 @@ export async function createShipment(input: {
 
   const shipment = await db.shipment.create({
     data: {
-      reference: await nextReference(),
+      reference: await nextShipmentReference(),
       ownerId,
       businessId: businessId ?? null,
       importType: data.importType,
@@ -332,7 +324,7 @@ export async function issueQuote(shipmentId: string, actorId: string) {
   const estimate = await estimateShipment(shipmentId);
   const shipment = await db.shipment.findUniqueOrThrow({
     where: { id: shipmentId },
-    include: { items: true, quotes: true },
+    include: { items: true },
   });
 
   const summary = summariseCharges(estimate.charges);
@@ -340,6 +332,10 @@ export async function issueQuote(shipmentId: string, actorId: string) {
     where: { code: { in: summary.map((c) => c.chargeCode) } },
   });
   const typeByCode = new Map(chargeTypes.map((t) => [t.code, t]));
+
+  // Allocated outside the transaction: a rollback should leave a gap in the
+  // numbering, not hand this number to the next caller.
+  const reference = await nextQuoteReference(shipmentId, shipment.reference);
 
   const quote = await db.$transaction(async (tx) => {
     await tx.quote.updateMany({
@@ -349,7 +345,7 @@ export async function issueQuote(shipmentId: string, actorId: string) {
 
     const created = await tx.quote.create({
       data: {
-        reference: `Q-${shipment.reference}-${shipment.quotes.length + 1}`,
+        reference,
         shipmentId,
         status: "ISSUED",
         customsValue: estimate.customsValue,
