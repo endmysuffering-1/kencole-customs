@@ -36,6 +36,18 @@ capability + ownership checks) and `src/lib/audit.ts`.
 
 **Tests** — `tests/landed-cost.test.ts`, 15 passing. Run `npm test`.
 
+**Seed data** — `prisma/seed.ts`. Reuses the real domain engine and `rate-book.ts`
+loader (not the Next-coupled service layer) so every seeded number is produced by
+the same code the app runs, not hand-typed. Creates one of each `Role`, a
+business and a couple of consumers, all 8 HS codes the classifier's keyword rules
+know about with unconfirmed placeholder rate rules, and four shipments spanning
+the state machine — a fresh `DRAFT` with open exceptions, a quoted commercial
+order `AWAITING_PAYMENT`, a regulated personal import carried through to
+`DELIVERED`, and a commercial shipment sitting in `CUSTOMS_HOLD` with a support
+ticket. Refuses to run twice against a non-empty database — use `npm run
+db:reset` to start over. Every seeded account shares one password, printed at
+the end of the run (also in `DEV_PASSWORD` at the top of the file).
+
 ## Two invariants the code is built around
 
 1. **No regulatory rate is hardcoded.** Every duty, VAT and levy rate lives in
@@ -57,7 +69,6 @@ decide them. `readyForDeclaration()` gates `DECLARATION_PREPARED` and
 
 ## Not built yet
 
-- Seed data (`prisma/seed.ts`) — needed before anything runs end to end
 - All UI: public site, calculator, consumer dashboard, ops queues, broker review
 - API routes under `/api/v1/`
 - Remaining tests: pricing, RBAC/IDOR, state machine, revenue separation
@@ -70,13 +81,16 @@ decide them. `readyForDeclaration()` gates `DECLARATION_PREPARED` and
 npm install
 cp .env.example .env          # set DATABASE_URL and SESSION_SECRET
 npx prisma migrate dev --name init
+npm run db:seed
 npm test
 ```
 
-Prisma's engine binaries could not be downloaded in the environment where this
-was built, so `prisma generate` has not been run against this schema and the
-files importing `@prisma/client` have not been typechecked. Expect to fix a
-handful of type errors on the first `npx prisma generate && npm run typecheck`.
+`prisma generate`, `migrate dev`, the seed script, `npm run typecheck` and
+`npm test` have all been run clean against this schema in a real Postgres
+database. The one type error that surfaced on the first `prisma generate` (an
+unannotated `StripeProvider.verifyWebhook` return type in
+`src/lib/providers/payments.ts` not matching the `PaymentProvider` interface)
+is fixed.
 
 ## Bahamas Customs items needing confirmation before production
 
