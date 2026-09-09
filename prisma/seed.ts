@@ -16,8 +16,9 @@ import {
   type ChargeLine,
   type LandedCostResult,
   type LineInput,
+  type RateBook,
 } from "@/lib/domain/landed-cost";
-import { calculateBrokerCharges } from "@/lib/domain/pricing";
+import { calculateBrokerCharges, type PricingRuleSnapshot } from "@/lib/domain/pricing";
 import { rankSuggestions, suggestFromKeywords, type KeywordRule } from "@/lib/domain/classification";
 import { canTransition, type ShipmentStatus, type TransitionGuardContext } from "@/lib/domain/shipment-state";
 import { detectExceptions, type ExceptionInput } from "@/lib/domain/exceptions";
@@ -48,7 +49,8 @@ const DEV_PASSWORD = "KencoleDev#2026";
 
 const NOW = new Date();
 const daysAgo = (n: number) => new Date(NOW.getTime() - n * 24 * 60 * 60 * 1000);
-const hoursAgo = (n: number) => new Date(NOW.getTime() - n * 60 * 60 * 1000);
+
+// ─────────────────────────────── Reference data ──────────────────────────────
 
 interface HsCodeSeed {
   code: string;
@@ -59,31 +61,11 @@ interface HsCodeSeed {
 }
 
 const HS_CODES: HsCodeSeed[] = [
-  {
-    code: "8471.30.00",
-    description: "Portable automatic data processing machines (laptops)",
-    keywords: ["laptop", "notebook computer", "macbook"],
-  },
-  {
-    code: "8517.13.00",
-    description: "Smartphones",
-    keywords: ["smartphone", "iphone", "mobile phone", "android phone"],
-  },
-  {
-    code: "6109.10.00",
-    description: "T-shirts, singlets, cotton, knitted",
-    keywords: ["t-shirt", "tee shirt", "cotton shirt"],
-  },
-  {
-    code: "9403.20.00",
-    description: "Other metal furniture",
-    keywords: ["shelving", "metal rack", "office furniture"],
-  },
-  {
-    code: "8708.99.00",
-    description: "Other parts and accessories of motor vehicles",
-    keywords: ["brake pad", "car part", "vehicle part", "alternator"],
-  },
+  { code: "8471.30.00", description: "Portable automatic data processing machines (laptops)", keywords: ["laptop", "notebook computer", "macbook", "tablet"] },
+  { code: "8517.13.00", description: "Smartphones", keywords: ["smartphone", "iphone", "mobile phone", "android phone"] },
+  { code: "6109.10.00", description: "T-shirts, singlets, cotton, knitted", keywords: ["t-shirt", "tee shirt", "cotton shirt", "work shirt"] },
+  { code: "9403.20.00", description: "Other metal furniture", keywords: ["shelving", "metal rack", "office furniture", "locker"] },
+  { code: "8708.99.00", description: "Other parts and accessories of motor vehicles", keywords: ["brake pad", "car part", "vehicle part", "alternator"] },
   {
     code: "2208.40.00",
     description: "Rum and other spirits obtained by distilling fermented sugar-cane products",
@@ -94,28 +76,154 @@ const HS_CODES: HsCodeSeed[] = [
   {
     code: "3004.90.00",
     description: "Medicaments, packaged for retail sale",
-    keywords: ["medicine", "pharmaceutical", "prescription"],
+    keywords: ["medicine", "pharmaceutical", "prescription", "medicament"],
     alwaysReview: true,
     regulated: { agency: "Ministry of Health & Wellness", permit: "Pharmaceutical import permit" },
   },
   {
     code: "0303.00.00",
     description: "Fish, frozen",
-    keywords: ["frozen fish", "seafood"],
+    keywords: ["frozen fish", "seafood", "shrimp"],
     alwaysReview: true,
     regulated: { agency: "Department of Marine Resources", permit: "Fisheries import permit" },
   },
 ];
 
 const REGULATED_CODES = new Set(HS_CODES.filter((h) => h.regulated).map((h) => h.code));
+const KEYWORD_RULES: KeywordRule[] = HS_CODES.map((h) => ({
+  hsCode: h.code, description: h.description, keywords: h.keywords, alwaysReview: h.alwaysReview,
+}));
 
-function chapterOf(code: string): string {
-  return code.slice(0, 2);
+const chapterOf = (code: string) => code.slice(0, 2);
+
+/** Line items shipments are built from. Every one carries an HS code; whether a
+ *  broker has stood behind it is a per-shipment decision, not a property here. */
+const ITEMS = {
+  laptop: { description: "14-inch business laptop", unitValue: "900.00", hsCode: "8471.30.00" },
+  tablet: { description: "Tablet computer, 10-inch", unitValue: "310.00", hsCode: "8471.30.00" },
+  phone: { description: "Android smartphone, unlocked", unitValue: "420.00", hsCode: "8517.13.00" },
+  tshirt: { description: "Cotton t-shirts, assorted sizes", unitValue: "8.50", hsCode: "6109.10.00" },
+  workshirt: { description: "Cotton work shirts, bulk", unitValue: "12.00", hsCode: "6109.10.00" },
+  shelving: { description: "Steel shelving unit, 5-tier", unitValue: "145.00", hsCode: "9403.20.00" },
+  lockers: { description: "Metal storage lockers", unitValue: "260.00", hsCode: "9403.20.00" },
+  brakepads: { description: "Vehicle brake pad set", unitValue: "35.00", hsCode: "8708.99.00" },
+  alternator: { description: "Alternator assembly", unitValue: "185.00", hsCode: "8708.99.00" },
+  rum: { description: "Rum, 750ml bottles", unitValue: "28.00", hsCode: "2208.40.00" },
+  spirits: { description: "Spirits, assorted, 1L", unitValue: "34.00", hsCode: "2208.40.00" },
+  meds: { description: "Prescription medicaments, packaged", unitValue: "60.00", hsCode: "3004.90.00" },
+  fish: { description: "Frozen fish fillets", unitValue: "6.50", hsCode: "0303.00.00" },
+  shrimp: { description: "Frozen shrimp, 5kg cartons", unitValue: "48.00", hsCode: "0303.00.00" },
+} satisfies Record<string, { description: string; unitValue: string; hsCode: string }>;
+
+type ItemKey = keyof typeof ITEMS;
+
+// ─────────────────────────────── Shipment scenarios ──────────────────────────
+
+/**
+ * The happy path, in order. A scenario's status is reached by walking the prefix
+ * of this line, so no scenario can describe a shipment the state machine would
+ * have refused to produce — `walk` re-checks every hop against canTransition.
+ */
+const MAIN_LINE: ShipmentStatus[] = [
+  "DOCUMENTS_RECEIVED", "UNDER_REVIEW", "CLASSIFICATION_REVIEW", "QUOTE_READY",
+  "AWAITING_PAYMENT", "PAID", "FREIGHT_IN_TRANSIT", "ARRIVED_BAHAMAS",
+  "DECLARATION_PREPARED", "SUBMITTED_TO_CUSTOMS", "CUSTOMS_REVIEW",
+  "CUSTOMS_RELEASED", "READY_FOR_DELIVERY", "OUT_FOR_DELIVERY", "DELIVERED",
+];
+
+function pathTo(target: ShipmentStatus, via?: ShipmentStatus): ShipmentStatus[] {
+  if (target === "DRAFT") return [];
+  if (via) {
+    const idx = MAIN_LINE.indexOf(via);
+    if (idx === -1) throw new Error(`${via} is not on the main line.`);
+    return [...MAIN_LINE.slice(0, idx + 1), target];
+  }
+  const idx = MAIN_LINE.indexOf(target);
+  // Off-line statuses reachable straight from DRAFT (DOCUMENTS_REQUIRED, CANCELLED).
+  return idx === -1 ? [target] : MAIN_LINE.slice(0, idx + 1);
 }
 
-/** Mirrors estimateShipment(): load the live rate book + pricing rules and run the
- *  real domain engine, so every seeded number is produced by the same code the app
- *  would run, not hand-typed. */
+type Party = { kind: "consumer"; index: number } | { kind: "business"; index: number };
+
+interface ShipmentSpec {
+  party: Party;
+  target: ShipmentStatus;
+  via?: ShipmentStatus;
+  mode: "AIR" | "SEA" | "COURIER";
+  supplier: number;
+  items: { key: ItemKey; quantity: string }[];
+  createdDaysAgo: number;
+  /** Whether a broker has signed off the lines. Anything reaching a declaration
+   *  must be "approved" — the state machine will refuse otherwise. */
+  classification: "approved" | "needs_review" | "unclassified";
+  description: string;
+  note?: string;
+}
+
+const c = (index: number): Party => ({ kind: "consumer", index });
+const b = (index: number): Party => ({ kind: "business", index });
+
+/** 30 shipments covering every ShipmentStatus at least once. */
+const SHIPMENT_SPECS: ShipmentSpec[] = [
+  { party: c(1), target: "DRAFT", mode: "AIR", supplier: 0, items: [{ key: "phone", quantity: "1" }], createdDaysAgo: 1, classification: "unclassified", description: "Phone, personal use" },
+  { party: b(0), target: "DRAFT", mode: "SEA", supplier: 2, items: [{ key: "shelving", quantity: "12" }], createdDaysAgo: 2, classification: "unclassified", description: "Store fit-out shelving" },
+
+  { party: c(2), target: "DOCUMENTS_REQUIRED", mode: "COURIER", supplier: 0, items: [{ key: "tablet", quantity: "1" }], createdDaysAgo: 6, classification: "unclassified", description: "Tablet from online order", note: "No commercial invoice supplied" },
+  { party: b(3), target: "DOCUMENTS_REQUIRED", mode: "AIR", supplier: 7, items: [{ key: "tshirt", quantity: "300" }], createdDaysAgo: 9, classification: "unclassified", description: "Summer apparel restock", note: "Awaiting supplier invoice" },
+
+  { party: c(0), target: "DOCUMENTS_RECEIVED", mode: "AIR", supplier: 0, items: [{ key: "laptop", quantity: "1" }], createdDaysAgo: 4, classification: "unclassified", description: "Laptop replacement" },
+
+  { party: b(1), target: "UNDER_REVIEW", mode: "SEA", supplier: 3, items: [{ key: "fish", quantity: "400" }], createdDaysAgo: 7, classification: "needs_review", description: "Frozen fish, weekly order" },
+
+  { party: b(2), target: "CLASSIFICATION_REVIEW", mode: "SEA", supplier: 5, items: [{ key: "brakepads", quantity: "60" }, { key: "alternator", quantity: "8" }], createdDaysAgo: 8, classification: "needs_review", description: "Auto parts restock" },
+
+  { party: b(0), target: "QUOTE_READY", mode: "SEA", supplier: 1, items: [{ key: "laptop", quantity: "3" }, { key: "brakepads", quantity: "20" }], createdDaysAgo: 10, classification: "approved", description: "Dispatch office hardware" },
+  { party: c(3), target: "QUOTE_READY", mode: "COURIER", supplier: 0, items: [{ key: "tshirt", quantity: "24" }], createdDaysAgo: 5, classification: "approved", description: "Clothing order" },
+
+  { party: b(4), target: "AWAITING_PAYMENT", mode: "SEA", supplier: 9, items: [{ key: "lockers", quantity: "10" }], createdDaysAgo: 12, classification: "approved", description: "Site storage lockers" },
+  { party: c(0), target: "AWAITING_PAYMENT", mode: "AIR", supplier: 6, items: [{ key: "phone", quantity: "2" }], createdDaysAgo: 6, classification: "approved", description: "Two handsets" },
+
+  { party: b(1), target: "PAID", mode: "SEA", supplier: 4, items: [{ key: "shrimp", quantity: "80" }], createdDaysAgo: 14, classification: "approved", description: "Shrimp, restaurant supply" },
+  { party: c(4), target: "PAID", mode: "COURIER", supplier: 0, items: [{ key: "tablet", quantity: "1" }], createdDaysAgo: 9, classification: "approved", description: "Tablet for school" },
+
+  { party: b(3), target: "FREIGHT_IN_TRANSIT", mode: "SEA", supplier: 7, items: [{ key: "tshirt", quantity: "500" }, { key: "workshirt", quantity: "120" }], createdDaysAgo: 18, classification: "approved", description: "Seasonal apparel container" },
+  { party: c(1), target: "FREIGHT_IN_TRANSIT", mode: "AIR", supplier: 6, items: [{ key: "laptop", quantity: "1" }], createdDaysAgo: 11, classification: "approved", description: "Laptop, air freight" },
+
+  { party: b(2), target: "ARRIVED_BAHAMAS", mode: "SEA", supplier: 5, items: [{ key: "brakepads", quantity: "120" }], createdDaysAgo: 20, classification: "approved", description: "Brake pads, bulk" },
+
+  { party: b(0), target: "DECLARATION_PREPARED", mode: "SEA", supplier: 2, items: [{ key: "shelving", quantity: "20" }, { key: "lockers", quantity: "6" }], createdDaysAgo: 22, classification: "approved", description: "Warehouse fittings" },
+
+  { party: b(1), target: "SUBMITTED_TO_CUSTOMS", mode: "SEA", supplier: 3, items: [{ key: "fish", quantity: "600" }], createdDaysAgo: 24, classification: "approved", description: "Frozen fish container" },
+  { party: c(0), target: "SUBMITTED_TO_CUSTOMS", mode: "COURIER", supplier: 8, items: [{ key: "rum", quantity: "6" }], createdDaysAgo: 16, classification: "approved", description: "Rum, personal import" },
+
+  { party: b(4), target: "CUSTOMS_REVIEW", mode: "SEA", supplier: 9, items: [{ key: "shelving", quantity: "30" }], createdDaysAgo: 26, classification: "approved", description: "Building supply order" },
+
+  { party: b(1), target: "CUSTOMS_HOLD", via: "SUBMITTED_TO_CUSTOMS", mode: "SEA", supplier: 4, items: [{ key: "shrimp", quantity: "200" }], createdDaysAgo: 28, classification: "approved", description: "Shrimp, held for inspection", note: "Selected for physical inspection" },
+  { party: c(2), target: "CUSTOMS_HOLD", via: "SUBMITTED_TO_CUSTOMS", mode: "AIR", supplier: 8, items: [{ key: "spirits", quantity: "12" }], createdDaysAgo: 25, classification: "approved", description: "Spirits, permit query", note: "Permit documentation queried" },
+
+  { party: b(2), target: "DUTIES_DUE", via: "CUSTOMS_REVIEW", mode: "SEA", supplier: 5, items: [{ key: "alternator", quantity: "24" }], createdDaysAgo: 30, classification: "approved", description: "Alternators, duties assessed" },
+
+  { party: b(3), target: "CUSTOMS_RELEASED", mode: "AIR", supplier: 7, items: [{ key: "workshirt", quantity: "200" }], createdDaysAgo: 27, classification: "approved", description: "Uniform restock" },
+
+  { party: c(3), target: "READY_FOR_DELIVERY", mode: "COURIER", supplier: 0, items: [{ key: "phone", quantity: "1" }], createdDaysAgo: 19, classification: "approved", description: "Handset, ready for delivery" },
+
+  { party: b(0), target: "OUT_FOR_DELIVERY", mode: "SEA", supplier: 1, items: [{ key: "laptop", quantity: "5" }], createdDaysAgo: 23, classification: "approved", description: "Laptops, out for delivery" },
+
+  { party: c(0), target: "DELIVERED", mode: "COURIER", supplier: 8, items: [{ key: "rum", quantity: "6" }], createdDaysAgo: 34, classification: "approved", description: "Rum, delivered" },
+  { party: c(4), target: "DELIVERED", mode: "AIR", supplier: 6, items: [{ key: "meds", quantity: "10" }], createdDaysAgo: 31, classification: "approved", description: "Medicaments, delivered" },
+
+  { party: c(2), target: "CANCELLED", mode: "AIR", supplier: 0, items: [{ key: "tshirt", quantity: "10" }], createdDaysAgo: 15, classification: "unclassified", description: "Cancelled before submission", note: "Customer cancelled the order" },
+  { party: b(4), target: "CANCELLED", via: "AWAITING_PAYMENT", mode: "SEA", supplier: 9, items: [{ key: "shelving", quantity: "8" }], createdDaysAgo: 21, classification: "approved", description: "Cancelled after quoting", note: "Supplier could not ship" },
+];
+
+// ─────────────────────────────── Costing helpers ─────────────────────────────
+
+let rateBookCache: RateBook | null = null;
+const pricingCache = new Map<string, PricingRuleSnapshot[]>();
+
+/** Mirrors estimateShipment(): the live rate book and pricing rules through the
+ *  real domain engine, so every seeded figure is produced by the code the app
+ *  runs rather than typed in by hand. */
 async function estimate(
   totals: { goodsValue: string; freightCost: string; insuranceCost: string; grossWeightKg?: string | null },
   lines: LineInput[],
@@ -127,14 +235,14 @@ async function estimate(
     deliveryDiscount?: string;
   },
 ): Promise<LandedCostResult> {
-  const [rateBook, pricingRules] = await Promise.all([
-    loadRateBook(),
-    loadPricingRules(ctx.businessId),
-  ]);
+  rateBookCache ??= await loadRateBook();
+  const cacheKey = ctx.businessId ?? "__none__";
+  if (!pricingCache.has(cacheKey)) pricingCache.set(cacheKey, await loadPricingRules(ctx.businessId));
+
   const customsValue = cents(
     money(totals.goodsValue).plus(money(totals.freightCost)).plus(money(totals.insuranceCost)),
   );
-  const brokerCharges = calculateBrokerCharges(pricingRules, {
+  const brokerCharges = calculateBrokerCharges(pricingCache.get(cacheKey)!, {
     customsValue: customsValue.toString(),
     lineCount: Math.max(lines.length, 1),
     importType: ctx.importType,
@@ -152,56 +260,52 @@ async function estimate(
       grossWeightKg: totals.grossWeightKg ?? null,
       lines,
     },
-    rateBook,
+    rateBookCache,
     brokerCharges,
   );
 }
 
 /** Validates each hop against the real state machine before writing it, so a
- *  mistake in this script's narrative fails loudly instead of seeding a shipment
- *  the app itself would never have allowed to reach that status. */
-async function walk(
+ *  mistake in a scenario fails loudly instead of seeding a shipment the app
+ *  itself would never have allowed to reach that status. */
+async function hop(
   shipmentId: string,
   from: ShipmentStatus,
-  hops: { to: ShipmentStatus; ctx: TransitionGuardContext; at: Date; actorId: string; note?: string }[],
+  to: ShipmentStatus,
+  ctx: TransitionGuardContext,
+  at: Date,
+  actorId: string,
+  note?: string,
 ): Promise<ShipmentStatus> {
-  let current = from;
-  for (const hop of hops) {
-    const verdict = canTransition(current, hop.to, hop.ctx);
-    if (!verdict.ok) {
-      throw new Error(`Seed data takes an illegal transition ${current} -> ${hop.to}: ${verdict.reason}`);
-    }
-    await prisma.shipmentStatusHistory.create({
-      data: { shipmentId, from: current, to: hop.to, actorId: hop.actorId, note: hop.note, createdAt: hop.at },
-    });
-    current = hop.to;
+  const verdict = canTransition(from, to, ctx);
+  if (!verdict.ok) {
+    throw new Error(`Seed scenario takes an illegal transition ${from} -> ${to}: ${verdict.reason}`);
   }
-  await prisma.shipment.update({ where: { id: shipmentId }, data: { status: current } });
-  return current;
+  await prisma.shipmentStatusHistory.create({
+    data: { shipmentId, from, to, actorId, note, createdAt: at },
+  });
+  await prisma.shipment.update({ where: { id: shipmentId }, data: { status: to } });
+  return to;
 }
 
-/** Mirrors issueQuote() + issueInvoiceForQuote(): summarise the computed charges,
- *  persist a Quote with its CustomsCharge rows, then an Invoice with InvoiceLines. */
-async function issueQuoteAndInvoice(input: {
+/** Mirrors issueQuote(): summarise the computed charges and persist a Quote with
+ *  its CustomsCharge rows. A quote can stand on its own — a shipment sitting at
+ *  QUOTE_READY has been priced but not yet billed. */
+async function issueQuote(input: {
   shipmentReference: string;
   shipmentId: string;
   estimateResult: LandedCostResult;
   chargeTypeIdByCode: Map<string, string>;
   brokerApproved: boolean;
-  quoteStatus: "ISSUED" | "ACCEPTED";
+  status: "ISSUED" | "ACCEPTED";
   quotedAt: Date;
-  billToEmail: string;
-  businessId: string | null;
-  invoiceStatus: "ISSUED" | "PAID";
-  issuedAt: Date;
 }) {
   const summary = summariseCharges(input.estimateResult.charges);
-
-  const quote = await prisma.quote.create({
+  return prisma.quote.create({
     data: {
       reference: await nextQuoteReference(input.shipmentId, input.shipmentReference),
       shipmentId: input.shipmentId,
-      status: input.quoteStatus,
+      status: input.status,
       customsValue: input.estimateResult.customsValue,
       governmentTotal: input.estimateResult.governmentTotal,
       brokerTotal: input.estimateResult.brokerTotal,
@@ -210,55 +314,73 @@ async function issueQuoteAndInvoice(input: {
       expiresAt: new Date(input.quotedAt.getTime() + 1000 * 60 * 60 * 24 * 14),
       createdAt: input.quotedAt,
       charges: {
-        create: summary.map((c: ChargeLine) => ({
-          chargeTypeId: input.chargeTypeIdByCode.get(c.chargeCode)!,
-          payee: c.payee,
-          basisAmount: c.basisAmount,
-          rateApplied: c.rateApplied,
-          amount: c.amount,
-          rateRuleId: c.rateRuleId ?? null,
+        create: summary.map((ch: ChargeLine) => ({
+          chargeTypeId: input.chargeTypeIdByCode.get(ch.chargeCode)!,
+          payee: ch.payee,
+          basisAmount: ch.basisAmount,
+          rateApplied: ch.rateApplied,
+          amount: ch.amount,
+          rateRuleId: ch.rateRuleId ?? null,
         })),
       },
     },
   });
+}
 
-  const total = cents(money(quote.governmentTotal).plus(money(quote.brokerTotal))).toFixed(2);
+/** Mirrors issueInvoiceForQuote(). governmentTotal and brokerTotal are carried
+ *  across as separate columns and never summed into one figure before storage. */
+async function issueInvoice(input: {
+  shipmentReference: string;
+  shipmentId: string;
+  quote: { id: string; governmentTotal: unknown; brokerTotal: unknown };
+  estimateResult: LandedCostResult;
+  billToEmail: string;
+  businessId: string | null;
+  issuedAt: Date;
+}) {
+  const summary = summariseCharges(input.estimateResult.charges);
+  const total = cents(
+    money(input.quote.governmentTotal as never).plus(money(input.quote.brokerTotal as never)),
+  ).toFixed(2);
+
   const invoice = await prisma.invoice.create({
     data: {
       reference: await nextInvoiceReference(input.shipmentId, input.shipmentReference),
       shipmentId: input.shipmentId,
-      quoteId: quote.id,
+      quoteId: input.quote.id,
       businessId: input.businessId,
       billToEmail: input.billToEmail,
-      status: input.invoiceStatus,
-      governmentTotal: quote.governmentTotal,
-      brokerTotal: quote.brokerTotal,
+      status: "ISSUED",
+      governmentTotal: input.estimateResult.governmentTotal,
+      brokerTotal: input.estimateResult.brokerTotal,
       total,
       issuedAt: input.issuedAt,
       dueAt: new Date(input.issuedAt.getTime() + 1000 * 60 * 60 * 24 * 7),
       lines: {
-        create: summary.map((c: ChargeLine, index: number) => ({
-          description: c.label,
-          payee: c.payee,
-          amount: c.amount,
-          chargeCode: c.chargeCode,
+        create: summary.map((ch: ChargeLine, index: number) => ({
+          description: ch.label,
+          payee: ch.payee,
+          amount: ch.amount,
+          chargeCode: ch.chargeCode,
           sortOrder: index,
         })),
       },
     },
   });
 
-  return { quote, invoice, total };
+  return { invoice, total };
 }
 
+let paymentSeq = 0;
 /** Mirrors recordPayment(): one successful payment that settles the invoice in full. */
 async function payInFull(invoiceId: string, total: string, receivedAt: Date, recordedBy: string) {
+  paymentSeq += 1;
   await prisma.$transaction([
     prisma.payment.create({
       data: {
         invoiceId,
         provider: "bank_transfer",
-        providerRef: `BT-${Math.floor(Math.random() * 900000 + 100000)}`,
+        providerRef: `BT-${String(100000 + paymentSeq)}`,
         amount: total,
         status: "SUCCEEDED",
         receivedAt,
@@ -269,6 +391,25 @@ async function payInFull(invoiceId: string, total: string, receivedAt: Date, rec
   ]);
 }
 
+/** Hop timestamps spread evenly between creation and now, so history reads as a
+ *  timeline and nothing is dated in the future. */
+function hopTimes(createdAt: Date, count: number): Date[] {
+  const step = (NOW.getTime() - createdAt.getTime()) / (count + 1);
+  return Array.from({ length: count }, (_, i) => new Date(createdAt.getTime() + step * (i + 1)));
+}
+
+function freightFor(mode: "AIR" | "SEA" | "COURIER", goodsValue: string) {
+  const goods = money(goodsValue);
+  const table = { AIR: { rate: "0.08", min: "45.00" }, SEA: { rate: "0.12", min: "180.00" }, COURIER: { rate: "0.05", min: "25.00" } }[mode];
+  const freight = cents(goods.times(money(table.rate)));
+  return {
+    freightCost: (freight.lessThan(money(table.min)) ? money(table.min) : freight).toFixed(2),
+    insuranceCost: mode === "COURIER" ? "0.00" : cents(goods.times(money("0.01"))).toFixed(2),
+  };
+}
+
+// ─────────────────────────────── Seed ────────────────────────────────────────
+
 async function main() {
   const existing = await prisma.user.count();
   if (existing > 0) {
@@ -277,115 +418,97 @@ async function main() {
     return;
   }
 
-  // ─────────────────────────────── Identity ───────────────────────────────────
   const passwordHash = await hashPassword(DEV_PASSWORD);
+  type Role = "SUPER_ADMIN" | "CUSTOMS_BROKER" | "OPERATIONS" | "DRIVER" | "BUSINESS_ADMIN" | "BUSINESS_USER" | "CONSUMER";
+  const seedUser = (email: string, fullName: string, role: Role, phone: string) =>
+    prisma.user.create({ data: { email, fullName, role, phone, passwordHash, emailVerified: new Date() } });
 
-  function seedUser(input: { email: string; fullName: string; role: "SUPER_ADMIN" | "CUSTOMS_BROKER" | "OPERATIONS" | "DRIVER" | "BUSINESS_ADMIN" | "BUSINESS_USER" | "CONSUMER"; phone: string }) {
-    return prisma.user.create({ data: { ...input, passwordHash, emailVerified: new Date() } });
+  // ── Staff ──
+  const [admin, broker, broker2, ops, ops2, driverUser, driverUser2] = await Promise.all([
+    seedUser("admin@kencole.bs", "Andrea Bethel", "SUPER_ADMIN", "+1 242 555 0100"),
+    seedUser("broker@kencole.bs", "Nicole Farrington", "CUSTOMS_BROKER", "+1 242 555 0101"),
+    seedUser("broker2@kencole.bs", "Everette Gibson", "CUSTOMS_BROKER", "+1 242 555 0104"),
+    seedUser("ops@kencole.bs", "Trevor Adderley", "OPERATIONS", "+1 242 555 0102"),
+    seedUser("ops2@kencole.bs", "Lakeisha Moss", "OPERATIONS", "+1 242 555 0105"),
+    seedUser("driver@kencole.bs", "Shane Ferguson", "DRIVER", "+1 242 555 0103"),
+    seedUser("driver2@kencole.bs", "Omar Culmer", "DRIVER", "+1 242 555 0106"),
+  ]);
+
+  const drivers = await Promise.all([
+    prisma.driver.create({ data: { userId: driverUser.id, vehicle: "Nissan NV200 van — plate KC-4471" } }),
+    prisma.driver.create({ data: { userId: driverUser2.id, vehicle: "Isuzu box truck — plate KC-2210" } }),
+  ]);
+
+  // ── Plans ──
+  const [consumerPlus, businessStarter, businessPro] = await Promise.all([
+    prisma.plan.create({ data: { code: "CONSUMER_PLUS", name: "Consumer Plus", audience: "B2C", monthlyPrice: "9.99", currency: "BSD", features: ["Priority document review", "10% off brokerage fees", "Email + SMS tracking updates"], brokerageDiscount: "0.10", deliveryDiscount: "0", sortOrder: 10 } }),
+    prisma.plan.create({ data: { code: "BUSINESS_STARTER", name: "Business Starter", audience: "B2B", monthlyPrice: "49.00", currency: "BSD", features: ["Dedicated account manager", "5% off brokerage fees"], brokerageDiscount: "0.05", deliveryDiscount: "0", sortOrder: 20 } }),
+    prisma.plan.create({ data: { code: "BUSINESS_PRO", name: "Business Pro", audience: "B2B", monthlyPrice: "199.00", currency: "BSD", features: ["Dedicated account manager", "15% off brokerage fees", "10% off delivery", "Priority customs queue"], brokerageDiscount: "0.15", deliveryDiscount: "0.10", sortOrder: 30 } }),
+  ]);
+
+  // ── Consumers ──
+  const consumerSpecs = [
+    { email: "marcus.deveaux@example.com", name: "Marcus Deveaux", phone: "+1 242 555 0118", line1: "22 Coral Vista Way", settlement: "Nassau", island: "New Providence", plan: consumerPlus, nib: "NIB-035-556-812" },
+    { email: "simone.pinder@example.com", name: "Simone Pinder", phone: "+1 242 555 0177", line1: "8 Pineridge Close", settlement: "Freeport", island: "Grand Bahama", plan: null, nib: null },
+    { email: "andre.rolle@example.com", name: "Andre Rolle", phone: "+1 242 555 0164", line1: "115 Blue Hill Road", settlement: "Nassau", island: "New Providence", plan: null, nib: null },
+    { email: "kaya.symonette@example.com", name: "Kaya Symonette", phone: "+1 242 555 0191", line1: "3 Harbour View Lane", settlement: "Marsh Harbour", island: "Abaco", plan: consumerPlus, nib: "NIB-041-220-337" },
+    { email: "delroy.bain@example.com", name: "Delroy Bain", phone: "+1 242 555 0128", line1: "76 Prince Charles Drive", settlement: "Nassau", island: "New Providence", plan: null, nib: null },
+  ];
+
+  const consumers: { user: { id: string; email: string }; addressId: string; planCode: string | null; plan: typeof consumerPlus | null }[] = [];
+  for (const spec of consumerSpecs) {
+    const user = await seedUser(spec.email, spec.name, "CONSUMER", spec.phone);
+    const address = await prisma.address.create({
+      data: { label: "Home", line1: spec.line1, settlement: spec.settlement, island: spec.island, contact: spec.name, phone: spec.phone },
+    });
+    const subscription = spec.plan
+      ? await prisma.subscription.create({ data: { planId: spec.plan.id, startedAt: daysAgo(220) } })
+      : null;
+    await prisma.consumerProfile.create({
+      data: { userId: user.id, nib: spec.nib, addressId: address.id, membershipId: subscription?.id ?? null },
+    });
+    consumers.push({ user, addressId: address.id, planCode: spec.plan?.code ?? null, plan: spec.plan });
   }
 
-  const [admin, broker, ops, driverUser, bizAdmin, bizUser, consumer1, consumer2] = await Promise.all([
-    seedUser({ email: "admin@kencole.bs", fullName: "Andrea Bethel", role: "SUPER_ADMIN", phone: "+1 242 555 0100" }),
-    seedUser({ email: "broker@kencole.bs", fullName: "Nicole Farrington", role: "CUSTOMS_BROKER", phone: "+1 242 555 0101" }),
-    seedUser({ email: "ops@kencole.bs", fullName: "Trevor Adderley", role: "OPERATIONS", phone: "+1 242 555 0102" }),
-    seedUser({ email: "driver@kencole.bs", fullName: "Shane Ferguson", role: "DRIVER", phone: "+1 242 555 0103" }),
-    seedUser({ email: "owner@islandhardwaremarine.bs", fullName: "Deborah Knowles", role: "BUSINESS_ADMIN", phone: "+1 242 555 0142" }),
-    seedUser({ email: "imports@islandhardwaremarine.bs", fullName: "Patrice Rolle", role: "BUSINESS_USER", phone: "+1 242 555 0143" }),
-    seedUser({ email: "marcus.deveaux@example.com", fullName: "Marcus Deveaux", role: "CONSUMER", phone: "+1 242 555 0118" }),
-    seedUser({ email: "simone.pinder@example.com", fullName: "Simone Pinder", role: "CONSUMER", phone: "+1 242 555 0177" }),
-  ]);
+  // ── Businesses ──
+  const businessSpecs = [
+    { legalName: "Island Hardware & Marine Ltd", trading: "Island Hardware & Marine", industry: "Marine & hardware retail", domain: "islandhardwaremarine.bs", adminName: "Deborah Knowles", userName: "Patrice Rolle", line1: "14 Marina Drive", settlement: "Nassau", island: "New Providence", plan: businessPro, tin: "TIN-2041-0088", importer: "IMP-BS-77321", manager: () => ops },
+    { legalName: "Bahama Fresh Foods Ltd", trading: "Bahama Fresh", industry: "Food import & distribution", domain: "bahamafresh.bs", adminName: "Anthony Cartwright", userName: "Renae Miller", line1: "9 Gladstone Road", settlement: "Nassau", island: "New Providence", plan: businessPro, tin: "TIN-3120-4471", importer: "IMP-BS-81004", manager: () => ops },
+    { legalName: "Lucayan Auto Parts Ltd", trading: "Lucayan Auto", industry: "Automotive parts retail", domain: "lucayanauto.bs", adminName: "Vincent Saunders", userName: "Tamika Bowe", line1: "41 Queens Highway", settlement: "Freeport", island: "Grand Bahama", plan: businessStarter, tin: "TIN-5507-2290", importer: "IMP-BS-64118", manager: () => ops2 },
+    { legalName: "Paradise Isle Boutique Ltd", trading: "Paradise Isle", industry: "Apparel retail", domain: "paradiseisleboutique.bs", adminName: "Alicia Curry", userName: "Joel Stubbs", line1: "27 Bay Street", settlement: "Nassau", island: "New Providence", plan: businessStarter, tin: "TIN-6612-1180", importer: "IMP-BS-90277", manager: () => ops2 },
+    { legalName: "Abaco Build Supply Ltd", trading: "Abaco Build", industry: "Construction supply", domain: "abacobuild.bs", adminName: "Garnell Thompson", userName: "Shavonne Dean", line1: "2 Don MacKay Boulevard", settlement: "Marsh Harbour", island: "Abaco", plan: null, tin: "TIN-7734-5512", importer: "IMP-BS-55190", manager: () => ops },
+  ];
 
-  const driver = await prisma.driver.create({
-    data: { userId: driverUser.id, vehicle: "Nissan NV200 van — plate KC-4471" },
-  });
-
-  // ─────────────────────────────── Plans & business ────────────────────────────
-  const [consumerPlus, businessStarter, businessPro] = await Promise.all([
-    prisma.plan.create({
+  const businesses: { id: string; billingEmail: string; addressId: string; planCode: string | null; plan: typeof businessPro | null; adminId: string; userId: string }[] = [];
+  for (const spec of businessSpecs) {
+    const subscription = spec.plan
+      ? await prisma.subscription.create({ data: { planId: spec.plan.id, startedAt: daysAgo(540) } })
+      : null;
+    const business = await prisma.business.create({
       data: {
-        code: "CONSUMER_PLUS", name: "Consumer Plus", audience: "B2C",
-        monthlyPrice: "9.99", currency: "BSD",
-        features: ["Priority document review", "10% off brokerage fees", "Email + SMS tracking updates"],
-        brokerageDiscount: "0.10", deliveryDiscount: "0", sortOrder: 10,
+        legalName: spec.legalName, tradingName: spec.trading, tin: spec.tin, importerNumber: spec.importer,
+        industry: spec.industry, billingEmail: `billing@${spec.domain}`,
+        accountManagerId: spec.manager().id, subscriptionId: subscription?.id ?? null,
       },
-    }),
-    prisma.plan.create({
-      data: {
-        code: "BUSINESS_STARTER", name: "Business Starter", audience: "B2B",
-        monthlyPrice: "49.00", currency: "BSD",
-        features: ["Dedicated account manager", "5% off brokerage fees"],
-        brokerageDiscount: "0.05", deliveryDiscount: "0", sortOrder: 20,
-      },
-    }),
-    prisma.plan.create({
-      data: {
-        code: "BUSINESS_PRO", name: "Business Pro", audience: "B2B",
-        monthlyPrice: "199.00", currency: "BSD",
-        features: [
-          "Dedicated account manager", "15% off brokerage fees", "10% off delivery",
-          "Priority customs queue",
-        ],
-        brokerageDiscount: "0.15", deliveryDiscount: "0.10", sortOrder: 30,
-      },
-    }),
-  ]);
+    });
+    const bizAdmin = await seedUser(`owner@${spec.domain}`, spec.adminName, "BUSINESS_ADMIN", "+1 242 555 0142");
+    const bizUser = await seedUser(`imports@${spec.domain}`, spec.userName, "BUSINESS_USER", "+1 242 555 0143");
+    await prisma.businessMember.createMany({
+      data: [
+        { businessId: business.id, userId: bizAdmin.id, isAdmin: true },
+        { businessId: business.id, userId: bizUser.id, isAdmin: false },
+      ],
+    });
+    const address = await prisma.address.create({
+      data: { label: "Warehouse", line1: spec.line1, settlement: spec.settlement, island: spec.island, contact: spec.adminName, phone: "+1 242 555 0142", businessId: business.id },
+    });
+    businesses.push({
+      id: business.id, billingEmail: business.billingEmail!, addressId: address.id,
+      planCode: spec.plan?.code ?? null, plan: spec.plan, adminId: bizAdmin.id, userId: bizUser.id,
+    });
+  }
 
-  const [consumerSub, businessSub] = await Promise.all([
-    prisma.subscription.create({ data: { planId: consumerPlus.id, startedAt: daysAgo(220) } }),
-    prisma.subscription.create({ data: { planId: businessPro.id, startedAt: daysAgo(540) } }),
-  ]);
-
-  const business = await prisma.business.create({
-    data: {
-      legalName: "Island Hardware & Marine Ltd",
-      tradingName: "Island Hardware & Marine",
-      tin: "TIN-2041-0088",
-      importerNumber: "IMP-BS-77321",
-      industry: "Marine & hardware retail",
-      billingEmail: "billing@islandhardwaremarine.bs",
-      accountManagerId: ops.id,
-      subscriptionId: businessSub.id,
-    },
-  });
-
-  await prisma.businessMember.createMany({
-    data: [
-      { businessId: business.id, userId: bizAdmin.id, isAdmin: true },
-      { businessId: business.id, userId: bizUser.id, isAdmin: false },
-    ],
-  });
-
-  const [warehouseAddress, marcusAddress, simoneAddress] = await Promise.all([
-    prisma.address.create({
-      data: {
-        label: "Warehouse", line1: "14 Marina Drive", settlement: "Nassau", island: "New Providence",
-        contact: "Deborah Knowles", phone: "+1 242 555 0142", businessId: business.id,
-      },
-    }),
-    prisma.address.create({
-      data: {
-        label: "Home", line1: "22 Coral Vista Way", settlement: "Nassau", island: "New Providence",
-        contact: "Marcus Deveaux", phone: "+1 242 555 0118",
-      },
-    }),
-    prisma.address.create({
-      data: {
-        label: "Home", line1: "8 Pineridge Close", settlement: "Freeport", island: "Grand Bahama",
-        contact: "Simone Pinder", phone: "+1 242 555 0177",
-      },
-    }),
-  ]);
-
-  await Promise.all([
-    prisma.consumerProfile.create({
-      data: { userId: consumer1.id, nib: "NIB-035-556-812", addressId: marcusAddress.id, membershipId: consumerSub.id },
-    }),
-    prisma.consumerProfile.create({
-      data: { userId: consumer2.id, addressId: simoneAddress.id },
-    }),
-  ]);
-
-  // ─────────────────────────────── Trade reference data ────────────────────────
+  // ── Trade reference data ──
   const hsCodeIdByCode = new Map<string, string>();
   for (const h of HS_CODES) {
     const created = await prisma.hsCode.create({
@@ -397,9 +520,7 @@ async function main() {
   await prisma.permitRequirement.createMany({
     data: HS_CODES.filter((h) => h.regulated).map((h) => ({
       hsCodeId: hsCodeIdByCode.get(h.code)!,
-      agency: h.regulated!.agency,
-      permit: h.regulated!.permit,
-      notes: PERMIT_PENDING_NOTE,
+      agency: h.regulated!.agency, permit: h.regulated!.permit, notes: PERMIT_PENDING_NOTE,
     })),
   });
 
@@ -422,6 +543,8 @@ async function main() {
             minAmount: r.minAmount ?? null,
             maxAmount: r.maxAmount ?? null,
             effectiveFrom: new Date("2020-01-01"),
+            // Never true in seed data. A rate becomes authoritative only when a
+            // human has checked it against the instrument and said so.
             confirmed: false,
             sourceNote: RATE_PENDING_NOTE,
           })),
@@ -459,438 +582,316 @@ async function main() {
     description: "Value Added Tax applied to the dutiable total (CIF plus duty and levies).",
     rules: [{ rate: "0.10" }],
   });
-  await chargeType({
-    code: "BROKERAGE", label: "Brokerage fee", payee: "BROKER", basis: "PERCENT_OF_CUSTOMS_VALUE",
-    sortOrder: 100, description: "Kencole's brokerage fee for preparing and filing the entry.", rules: [],
-  });
-  await chargeType({
-    code: "PROCESSING", label: "Processing & handling fee", payee: "BROKER", basis: "FLAT",
-    sortOrder: 110, description: "Kencole's internal handling and administration fee.", rules: [],
-  });
-  await chargeType({
-    code: "DELIVERY", label: "Local delivery", payee: "BROKER", basis: "FLAT",
-    sortOrder: 120, description: "Local delivery from our Nassau facility to the consignee.", rules: [],
-  });
-  await chargeType({
-    code: "RUSH", label: "Rush processing", payee: "BROKER", basis: "FLAT",
-    sortOrder: 130, description: "Expedited processing for time-sensitive shipments.", rules: [],
-  });
+
+  // Kencole's own fees. These carry no RateRule: they are not set by law, so they
+  // resolve through PricingRule (BUSINESS > PLAN > GLOBAL) instead of the rate book.
+  await chargeType({ code: "BROKERAGE", label: "Brokerage fee", payee: "BROKER", basis: "PERCENT_OF_CUSTOMS_VALUE", sortOrder: 100, description: "Kencole's brokerage fee for preparing and filing the entry.", rules: [] });
+  await chargeType({ code: "PROCESSING", label: "Processing & handling fee", payee: "BROKER", basis: "FLAT", sortOrder: 110, description: "Kencole's internal handling and administration fee.", rules: [] });
+  await chargeType({ code: "DELIVERY", label: "Local delivery", payee: "BROKER", basis: "FLAT", sortOrder: 120, description: "Local delivery from our Nassau facility to the consignee.", rules: [] });
+  await chargeType({ code: "RUSH", label: "Rush processing", payee: "BROKER", basis: "FLAT", sortOrder: 130, description: "Expedited processing for time-sensitive shipments.", rules: [] });
 
   await prisma.pricingRule.createMany({
     data: [
       { chargeCode: "BROKERAGE", scope: "GLOBAL", percentRate: "0.025", minFee: "40.00", maxFee: "450.00", priority: 100 },
-      { chargeCode: "BROKERAGE", scope: "BUSINESS", businessId: business.id, percentRate: "0.015", minFee: "30.00", priority: 100 },
-      { chargeCode: "BROKERAGE", scope: "PLAN", planCode: "BUSINESS_PRO", percentRate: "0.018", minFee: "32.00", priority: 100 },
+      { chargeCode: "BROKERAGE", scope: "PLAN", planCode: "BUSINESS_PRO", percentRate: "0.020", minFee: "32.00", priority: 100 },
+      { chargeCode: "BROKERAGE", scope: "PLAN", planCode: "BUSINESS_STARTER", percentRate: "0.022", minFee: "36.00", priority: 100 },
+      { chargeCode: "BROKERAGE", scope: "BUSINESS", businessId: businesses[0]!.id, percentRate: "0.015", minFee: "30.00", priority: 100 },
+      { chargeCode: "BROKERAGE", scope: "BUSINESS", businessId: businesses[1]!.id, percentRate: "0.018", minFee: "35.00", priority: 100 },
       { chargeCode: "PROCESSING", scope: "GLOBAL", flatAmount: "15.00", perLineAmount: "2.50", priority: 100 },
       { chargeCode: "DELIVERY", scope: "GLOBAL", flatAmount: "25.00", priority: 100 },
       { chargeCode: "RUSH", scope: "GLOBAL", flatAmount: "60.00", priority: 100 },
     ],
   });
 
-  const [globalMarine, amazon, techDirect] = await Promise.all([
-    prisma.supplier.create({ data: { name: "Global Marine Supply Co", country: "US", businessId: business.id } }),
-    prisma.supplier.create({ data: { name: "Amazon.com", country: "US" } }),
-    prisma.supplier.create({ data: { name: "Tech Direct Wholesale", country: "US", businessId: business.id } }),
-  ]);
+  // ── Suppliers ──
+  const supplierSpecs = [
+    { name: "Amazon.com", country: "US", business: null },
+    { name: "Tech Direct Wholesale", country: "US", business: 0 },
+    { name: "Global Marine Supply Co", country: "US", business: 0 },
+    { name: "Gulf Coast Foods Inc", country: "US", business: 1 },
+    { name: "Atlantic Seafood Traders", country: "US", business: 1 },
+    { name: "Southern Auto Parts LLC", country: "US", business: 2 },
+    { name: "Shenzhen Bright Electronics", country: "CN", business: null },
+    { name: "Milano Apparel Srl", country: "IT", business: 3 },
+    { name: "Caribbean Spirits Export Ltd", country: "JM", business: null },
+    { name: "Peninsula Building Products", country: "US", business: 4 },
+  ];
+  const suppliers = [];
+  for (const s of supplierSpecs) {
+    suppliers.push(await prisma.supplier.create({
+      data: { name: s.name, country: s.country, businessId: s.business === null ? null : businesses[s.business]!.id },
+    }));
+  }
 
   await prisma.product.createMany({
     data: [
-      { businessId: business.id, sku: "LPT-14BIZ", description: "14-inch business laptop (dispatch office standard issue)", hsCodeId: hsCodeIdByCode.get("8471.30.00")! },
-      { businessId: business.id, sku: "BRK-STD-01", description: "Standard import vehicle brake pad set", hsCodeId: hsCodeIdByCode.get("8708.99.00")! },
+      { businessId: businesses[0]!.id, sku: "LPT-14BIZ", description: "14-inch business laptop", hsCodeId: hsCodeIdByCode.get("8471.30.00")! },
+      { businessId: businesses[0]!.id, sku: "SHELF-5T", description: "Steel shelving unit, 5-tier", hsCodeId: hsCodeIdByCode.get("9403.20.00")! },
+      { businessId: businesses[1]!.id, sku: "FSH-FIL", description: "Frozen fish fillets", hsCodeId: hsCodeIdByCode.get("0303.00.00")! },
+      { businessId: businesses[1]!.id, sku: "SHR-5KG", description: "Frozen shrimp, 5kg cartons", hsCodeId: hsCodeIdByCode.get("0303.00.00")! },
+      { businessId: businesses[2]!.id, sku: "BRK-STD-01", description: "Vehicle brake pad set", hsCodeId: hsCodeIdByCode.get("8708.99.00")! },
+      { businessId: businesses[2]!.id, sku: "ALT-ASSY", description: "Alternator assembly", hsCodeId: hsCodeIdByCode.get("8708.99.00")! },
+      { businessId: businesses[3]!.id, sku: "TEE-AST", description: "Cotton t-shirts, assorted sizes", hsCodeId: hsCodeIdByCode.get("6109.10.00")! },
+      { businessId: businesses[3]!.id, sku: "WRK-SHT", description: "Cotton work shirts, bulk", hsCodeId: hsCodeIdByCode.get("6109.10.00")! },
+      { businessId: businesses[4]!.id, sku: "LKR-MTL", description: "Metal storage lockers", hsCodeId: hsCodeIdByCode.get("9403.20.00")! },
+      { businessId: businesses[4]!.id, sku: "SHELF-HD", description: "Heavy duty shelving", hsCodeId: hsCodeIdByCode.get("9403.20.00")! },
     ],
   });
 
-  // ─────────────────────────────── Shipments ───────────────────────────────────
-  let shipmentSeq = 0;
-  const nextReference = async () => {
-    shipmentSeq += 1;
-    return nextShipmentReference();
-  };
+  // ── Shipments ──
+  let entrySeq = 4800;
+  const statusCounts = new Map<string, number>();
 
-  // Shipment A — a consumer's shipment moments after starting, nothing done yet.
-  {
-    const items: { description: string; quantity: string; unitValue: string }[] = [
-      { description: "Bluetooth over-ear headphones", quantity: "1", unitValue: "85.00" },
-    ];
-    const goodsValue = items[0]!.unitValue;
-    const lines: LineInput[] = items.map((it, i) => ({
-      lineNumber: i + 1, description: it.description, quantity: it.quantity,
-      lineValue: cents(money(it.quantity).times(money(it.unitValue))).toFixed(2), hsCode: null,
-    }));
-    const result = await estimate(
-      { goodsValue, freightCost: "0", insuranceCost: "0" }, lines,
-      { businessId: null, importType: "PERSONAL" },
-    );
+  for (const spec of SHIPMENT_SPECS) {
+    const isBusiness = spec.party.kind === "business";
+    const business = isBusiness ? businesses[spec.party.index]! : null;
+    const consumer = !isBusiness ? consumers[spec.party.index]! : null;
+    const ownerId = business ? business.userId : consumer!.user.id;
+    const billToEmail = business ? business.billingEmail : consumer!.user.email;
+    const plan = business ? business.plan : consumer!.plan;
+    const planCode = business ? business.planCode : consumer!.planCode;
+    const importType = isBusiness ? "COMMERCIAL" : "PERSONAL";
+    const createdAt = daysAgo(spec.createdDaysAgo);
 
-    const reference = await nextReference();
-    const shipment = await prisma.shipment.create({
-      data: {
-        reference, ownerId: consumer2.id, importType: "PERSONAL", freightMode: "AIR",
-        supplierId: amazon.id, description: "Headphones, personal use",
-        goodsValue, freightCost: "0", insuranceCost: "0",
-        status: "DRAFT", estimateJson: result as never, estimatedAt: hoursAgo(3),
-        createdAt: hoursAgo(3), updatedAt: hoursAgo(3),
-        items: { create: items.map((it, i) => ({
-          lineNumber: i + 1, description: it.description, quantity: it.quantity, unitValue: it.unitValue,
-          lineValue: cents(money(it.quantity).times(money(it.unitValue))).toFixed(2),
-        })) },
-        history: { create: { to: "DRAFT", actorId: consumer2.id, note: "Shipment created", createdAt: hoursAgo(3) } },
-      },
-      include: { items: true },
+    const lines = spec.items.map((it, i) => {
+      const item = ITEMS[it.key];
+      return {
+        lineNumber: i + 1,
+        description: item.description,
+        quantity: it.quantity,
+        unitValue: item.unitValue,
+        lineValue: cents(money(it.quantity).times(money(item.unitValue))).toFixed(2),
+        hsCode: item.hsCode,
+      };
     });
-
-    const exceptionInput: ExceptionInput = {
-      hasCommercialInvoice: false, freightCost: "0", goodsValue, freightMode: "AIR",
-      lines: shipment.items.map((i) => ({ lineNumber: i.lineNumber, hsCode: null, lineValue: i.lineValue.toString() })),
-      status: "DRAFT", statusChangedAt: hoursAgo(3), now: NOW,
-    };
-    const flags = detectExceptions(exceptionInput);
-    await prisma.exceptionFlag.createMany({
-      data: flags.map((f) => ({ shipmentId: shipment.id, code: f.code, severity: f.severity, message: f.message })),
-    });
-
-    await prisma.auditLog.create({
-      data: { actorId: consumer2.id, action: "shipment.created", entityType: "Shipment", entityId: shipment.id, newValue: { reference, goodsValue } as never },
-    });
-  }
-
-  // Shipment B — Island Hardware's recurring commercial order, quoted, awaiting payment.
-  {
-    const items = [
-      { description: "14-inch business laptop, dispatch office", quantity: "3", unitValue: "900.00", hsCode: "8471.30.00" },
-      { description: "Assorted vehicle brake pad sets", quantity: "20", unitValue: "35.00", hsCode: "8708.99.00" },
-    ];
-    const lines: LineInput[] = items.map((it, i) => ({
-      lineNumber: i + 1, description: it.description, quantity: it.quantity,
-      lineValue: cents(money(it.quantity).times(money(it.unitValue))).toFixed(2), hsCode: it.hsCode,
-    }));
     const goodsValue = cents(lines.reduce((acc, l) => acc.plus(money(l.lineValue)), money(0))).toFixed(2);
-    const freightCost = "220.00";
-    const insuranceCost = "15.00";
+    const { freightCost, insuranceCost } = freightFor(spec.mode, goodsValue);
+
+    const approved = spec.classification === "approved";
+    const path = pathTo(spec.target, spec.via);
+    if (path.includes("DECLARATION_PREPARED") && !approved) {
+      throw new Error(`Scenario "${spec.description}" reaches a declaration without broker-approved lines.`);
+    }
+
+    // Only a broker-approved line carries an hsCodeId, which is what the rate
+    // engine resolves against — so an unreviewed line is costed at the default.
+    const estimateLines: LineInput[] = lines.map((l) => ({
+      lineNumber: l.lineNumber, description: l.description, quantity: l.quantity,
+      lineValue: l.lineValue, hsCode: approved ? l.hsCode : null,
+    }));
 
     const result = await estimate(
-      { goodsValue, freightCost, insuranceCost, grossWeightKg: "42.500" }, lines,
-      { businessId: business.id, importType: "COMMERCIAL", planCode: "BUSINESS_PRO", brokerageDiscount: businessPro.brokerageDiscount.toString(), deliveryDiscount: businessPro.deliveryDiscount.toString() },
+      { goodsValue, freightCost, insuranceCost }, estimateLines,
+      {
+        businessId: business?.id ?? null, importType, planCode,
+        brokerageDiscount: plan?.brokerageDiscount?.toString(),
+        deliveryDiscount: plan?.deliveryDiscount?.toString(),
+      },
     );
 
-    const reference = await nextReference();
+    const reference = await nextShipmentReference();
     const shipment = await prisma.shipment.create({
       data: {
-        reference, ownerId: bizUser.id, businessId: business.id, importType: "COMMERCIAL", freightMode: "SEA",
-        supplierId: techDirect.id, description: "Recurring dispatch-office hardware order",
-        goodsValue, freightCost, insuranceCost, grossWeightKg: "42.500",
-        status: "DRAFT", estimateJson: result as never, estimatedAt: daysAgo(4),
-        createdAt: daysAgo(6), updatedAt: daysAgo(4),
-        items: { create: items.map((it, i) => ({
-          lineNumber: i + 1, description: it.description, quantity: it.quantity, unitValue: it.unitValue,
-          lineValue: cents(money(it.quantity).times(money(it.unitValue))).toFixed(2),
-          hsCodeId: hsCodeIdByCode.get(it.hsCode)!, suggestedHsCode: it.hsCode, confidence: "1.000",
-          classificationStatus: "BROKER_APPROVED", brokerNote: "Recurring SKU, matches prior approved entries.",
-        })) },
-        history: { create: { to: "DRAFT", actorId: bizUser.id, note: "Shipment created", createdAt: daysAgo(6) } },
+        reference, ownerId, businessId: business?.id ?? null, importType, freightMode: spec.mode,
+        supplierId: suppliers[spec.supplier]!.id, description: spec.description,
+        goodsValue, freightCost, insuranceCost,
+        status: "DRAFT", estimateJson: result as never, estimatedAt: createdAt,
+        createdAt, updatedAt: createdAt,
+        items: {
+          create: lines.map((l) => {
+            const suggestion = rankSuggestions([suggestFromKeywords(l.description, KEYWORD_RULES)])[0];
+            const base = {
+              lineNumber: l.lineNumber, description: l.description, quantity: l.quantity,
+              unitValue: l.unitValue, lineValue: l.lineValue,
+            };
+            if (spec.classification === "unclassified") return base;
+            if (spec.classification === "needs_review") {
+              return {
+                ...base,
+                suggestedHsCode: suggestion?.hsCode ?? l.hsCode,
+                confidence: (suggestion?.confidence ?? 0.57).toFixed(3),
+                classificationStatus: "NEEDS_REVIEW" as const,
+              };
+            }
+            return {
+              ...base,
+              hsCodeId: hsCodeIdByCode.get(l.hsCode)!,
+              suggestedHsCode: suggestion?.hsCode ?? l.hsCode,
+              confidence: (suggestion?.confidence ?? 0.57).toFixed(3),
+              classificationStatus: "BROKER_APPROVED" as const,
+              brokerNote: REGULATED_CODES.has(l.hsCode)
+                ? "Regulated line — permit sighted before approval."
+                : "Classification confirmed against the commercial invoice.",
+            };
+          }),
+        },
+        history: { create: { to: "DRAFT", actorId: ownerId, note: "Shipment created", createdAt } },
       },
-      include: { items: true },
     });
 
-    await prisma.shipmentDocument.create({
-      data: {
-        shipmentId: shipment.id, kind: "COMMERCIAL_INVOICE", fileName: "tech-direct-invoice-8842.pdf",
-        mimeType: "application/pdf", sizeBytes: 184_233, storageKey: `shipments/${shipment.id}/commercial-invoice.pdf`,
-        scanStatus: "CLEAN", uploadedBy: bizUser.id, createdAt: daysAgo(6),
-      },
-    });
+    const hasDocuments = path.includes("DOCUMENTS_RECEIVED");
+    if (hasDocuments) {
+      await prisma.shipmentDocument.create({
+        data: {
+          shipmentId: shipment.id, kind: "COMMERCIAL_INVOICE",
+          fileName: `${reference.toLowerCase()}-invoice.pdf`, mimeType: "application/pdf",
+          sizeBytes: 90_000 + lines.length * 12_000, storageKey: `shipments/${shipment.id}/commercial-invoice.pdf`,
+          scanStatus: "CLEAN", uploadedBy: ownerId, createdAt,
+        },
+      });
+    }
 
-    const ctx: TransitionGuardContext = { brokerApproved: true, invoiceSettled: false, hasRequiredDocuments: true };
-    await walk(shipment.id, "DRAFT", [
-      { to: "DOCUMENTS_RECEIVED", ctx, at: daysAgo(6), actorId: bizUser.id, note: "Commercial invoice uploaded" },
-      { to: "UNDER_REVIEW", ctx, at: daysAgo(5), actorId: ops.id },
-      { to: "CLASSIFICATION_REVIEW", ctx, at: daysAgo(5), actorId: ops.id },
-      { to: "QUOTE_READY", ctx, at: daysAgo(4), actorId: broker.id, note: "Both lines already broker-approved from history" },
-    ]);
+    const times = hopTimes(createdAt, path.length);
+    const reachesPaid = path.includes("PAID");
+    let current: ShipmentStatus = "DRAFT";
+    let settled = false;
+    let quote: { id: string; governmentTotal: unknown; brokerTotal: unknown } | null = null;
+    let invoiceRecord: { id: string; total: string } | null = null;
 
-    const { invoice, total } = await issueQuoteAndInvoice({
-      shipmentReference: reference, shipmentId: shipment.id, estimateResult: result, chargeTypeIdByCode,
-      brokerApproved: true, quoteStatus: "ISSUED", quotedAt: daysAgo(4),
-      billToEmail: business.billingEmail!, businessId: business.id,
-      invoiceStatus: "ISSUED", issuedAt: daysAgo(4),
-    });
-    void total;
+    for (const [i, to] of path.entries()) {
+      const at = times[i]!;
+      // The invoice has to be settled before the PAID guard is evaluated.
+      if (to === "PAID" && invoiceRecord && !settled) {
+        await payInFull(invoiceRecord.id, invoiceRecord.total, at, ops.id);
+        settled = true;
+      }
+      const actorId =
+        to === "OUT_FOR_DELIVERY" || to === "DELIVERED" ? driverUser.id
+        : to === "DECLARATION_PREPARED" || to === "SUBMITTED_TO_CUSTOMS" || to === "QUOTE_READY" ? broker.id
+        : ops.id;
 
-    await walk(shipment.id, "QUOTE_READY", [
-      { to: "AWAITING_PAYMENT", ctx, at: daysAgo(4), actorId: bizAdmin.id },
-    ]);
+      current = await hop(
+        shipment.id, current, to,
+        { brokerApproved: approved, invoiceSettled: settled, hasRequiredDocuments: hasDocuments },
+        at, actorId, to === spec.target ? spec.note : undefined,
+      );
+
+      // Priced at QUOTE_READY, billed at AWAITING_PAYMENT — a shipment stopping
+      // at QUOTE_READY has a quote and no invoice, which is the real sequence.
+      if (to === "QUOTE_READY") {
+        quote = await issueQuote({
+          shipmentReference: reference, shipmentId: shipment.id, estimateResult: result,
+          chargeTypeIdByCode, brokerApproved: approved,
+          status: reachesPaid ? "ACCEPTED" : "ISSUED", quotedAt: at,
+        });
+      }
+      if (to === "AWAITING_PAYMENT" && quote) {
+        const { invoice, total } = await issueInvoice({
+          shipmentReference: reference, shipmentId: shipment.id, quote, estimateResult: result,
+          billToEmail, businessId: business?.id ?? null, issuedAt: at,
+        });
+        invoiceRecord = { id: invoice.id, total };
+      }
+    }
+
+    if (path.includes("DECLARATION_PREPARED")) {
+      entrySeq += 1;
+      const declStatus =
+        current === "DECLARATION_PREPARED" ? "PREPARED"
+        : current === "CUSTOMS_HOLD" ? "QUERIED"
+        : current === "DUTIES_DUE" ? "ASSESSED"
+        : ["CUSTOMS_RELEASED", "READY_FOR_DELIVERY", "OUT_FOR_DELIVERY", "DELIVERED"].includes(current) ? "RELEASED"
+        : "SUBMITTED";
+      const submittedIdx = path.indexOf("SUBMITTED_TO_CUSTOMS");
+      await prisma.customsDeclaration.create({
+        data: {
+          shipmentId: shipment.id, status: declStatus,
+          entryNumber: `C2C-2026-${String(entrySeq).padStart(6, "0")}`, regimeCode: "IM4",
+          submittedAt: submittedIdx >= 0 ? times[submittedIdx]! : null,
+          submittedBy: submittedIdx >= 0 ? broker.id : null,
+          assessedTotal: declStatus === "ASSESSED" || declStatus === "RELEASED" ? result.governmentTotal : null,
+          releasedAt: declStatus === "RELEASED" ? times[path.indexOf("CUSTOMS_RELEASED")]! : null,
+          adapter: "manual",
+          payloadJson: { reference, lines: lines.length, declarant: broker.id } as never,
+        },
+      });
+    }
+
+    if (path.includes("READY_FOR_DELIVERY")) {
+      const readyAt = times[path.indexOf("READY_FOR_DELIVERY")]!;
+      const deliveredIdx = path.indexOf("DELIVERED");
+      const deliveryFee = summariseCharges(result.charges).find((ch) => ch.chargeCode === "DELIVERY")?.amount ?? "25.00";
+      const driver = drivers[spec.createdDaysAgo % drivers.length]!;
+      await prisma.delivery.create({
+        data: {
+          shipmentId: shipment.id,
+          addressId: business ? business.addressId : consumer!.addressId,
+          driverId: driver.id,
+          status: current === "DELIVERED" ? "DELIVERED" : current === "OUT_FOR_DELIVERY" ? "OUT_FOR_DELIVERY" : "SCHEDULED",
+          scheduledFor: readyAt, fee: deliveryFee,
+          signatureName: current === "DELIVERED" ? "Received at address" : null,
+          podStorageKey: current === "DELIVERED" ? `shipments/${shipment.id}/pod.jpg` : null,
+          deliveredAt: current === "DELIVERED" && deliveredIdx >= 0 ? times[deliveredIdx]! : null,
+        },
+      });
+    }
 
     const exceptionInput: ExceptionInput = {
-      hasCommercialInvoice: true, freightCost, goodsValue, freightMode: "SEA",
-      lines: shipment.items.map((i) => ({
-        lineNumber: i.lineNumber, hsCode: items[i.lineNumber - 1]!.hsCode, lineValue: i.lineValue.toString(),
-        regulated: REGULATED_CODES.has(items[i.lineNumber - 1]!.hsCode),
+      hasCommercialInvoice: hasDocuments,
+      freightCost, goodsValue, freightMode: spec.mode,
+      lines: lines.map((l) => ({
+        lineNumber: l.lineNumber,
+        hsCode: approved ? l.hsCode : null,
+        lineValue: l.lineValue,
+        regulated: REGULATED_CODES.has(l.hsCode),
       })),
-      status: "AWAITING_PAYMENT", statusChangedAt: daysAgo(4), now: NOW,
-      quotedGovernmentTotal: result.governmentTotal,
+      status: current,
+      statusChangedAt: times[times.length - 1] ?? createdAt,
+      now: NOW,
+      quotedGovernmentTotal: path.includes("QUOTE_READY") ? result.governmentTotal : null,
     };
     const flags = detectExceptions(exceptionInput);
     if (flags.length) {
       await prisma.exceptionFlag.createMany({
-        data: flags.map((f) => ({ shipmentId: shipment.id, code: f.code, severity: f.severity, message: f.message })),
+        data: flags.map((f) => ({
+          shipmentId: shipment.id, code: f.code, severity: f.severity, message: f.message,
+          // A delivered shipment's problems were dealt with on the way.
+          resolvedAt: current === "DELIVERED" ? times[times.length - 1]! : null,
+          resolvedBy: current === "DELIVERED" ? broker.id : null,
+        })),
       });
     }
 
-    await prisma.auditLog.create({
-      data: {
-        actorId: broker.id, action: "quote.issued", entityType: "Invoice", entityId: invoice.id,
-        newValue: { reference: invoice.reference, governmentTotal: result.governmentTotal, brokerTotal: result.brokerTotal } as never,
-      },
-    });
+    statusCounts.set(current, (statusCounts.get(current) ?? 0) + 1);
   }
 
-  // Shipment C — a consumer's regulated shipment, all the way through to delivery.
-  {
-    const description = "Rum, 750ml, 6 bottles";
-    const suggestion = rankSuggestions([
-      suggestFromKeywords(description, HS_CODES.map((h): KeywordRule => ({ hsCode: h.code, description: h.description, keywords: h.keywords, alwaysReview: h.alwaysReview }))),
-    ])[0];
-
-    const quantity = "6";
-    const unitValue = "28.00";
-    const lineValue = cents(money(quantity).times(money(unitValue))).toFixed(2);
-    const lines: LineInput[] = [{ lineNumber: 1, description, quantity, lineValue, hsCode: "2208.40.00" }];
-    const goodsValue = lineValue;
-    const freightCost = "35.00";
-    const insuranceCost = "0";
-
-    const result = await estimate(
-      { goodsValue, freightCost, insuranceCost, grossWeightKg: "3.200" }, lines,
-      { businessId: null, importType: "PERSONAL", planCode: "CONSUMER_PLUS", brokerageDiscount: consumerPlus.brokerageDiscount.toString(), deliveryDiscount: consumerPlus.deliveryDiscount.toString() },
-    );
-
-    const reference = await nextReference();
-    const shipment = await prisma.shipment.create({
-      data: {
-        reference, ownerId: consumer1.id, importType: "PERSONAL", freightMode: "COURIER",
-        supplierId: amazon.id, description,
-        goodsValue, freightCost, insuranceCost, grossWeightKg: "3.200",
-        status: "DRAFT", estimateJson: result as never, estimatedAt: daysAgo(9),
-        createdAt: daysAgo(10), updatedAt: daysAgo(9),
-        items: { create: [{
-          lineNumber: 1, description, quantity, unitValue, lineValue,
-          hsCodeId: hsCodeIdByCode.get("2208.40.00")!,
-          suggestedHsCode: suggestion?.hsCode ?? "2208.40.00", confidence: (suggestion?.confidence ?? 0.57).toFixed(3),
-          classificationStatus: "BROKER_APPROVED",
-          brokerNote: "Regulated line, always reviewed. Liquor import permit sighted before approval.",
-        }] },
-        history: { create: { to: "DRAFT", actorId: consumer1.id, note: "Shipment created", createdAt: daysAgo(10) } },
-      },
-      include: { items: true },
-    });
-
-    await prisma.shipmentDocument.create({
-      data: {
-        shipmentId: shipment.id, kind: "COMMERCIAL_INVOICE", fileName: "amazon-order-invoice.pdf",
-        mimeType: "application/pdf", sizeBytes: 92_411, storageKey: `shipments/${shipment.id}/commercial-invoice.pdf`,
-        scanStatus: "CLEAN", uploadedBy: consumer1.id, createdAt: daysAgo(10),
-      },
-    });
-
-    const ctxApproved: TransitionGuardContext = { brokerApproved: true, invoiceSettled: false, hasRequiredDocuments: true };
-    await walk(shipment.id, "DRAFT", [
-      { to: "DOCUMENTS_RECEIVED", ctx: ctxApproved, at: daysAgo(10), actorId: consumer1.id },
-      { to: "UNDER_REVIEW", ctx: ctxApproved, at: daysAgo(9), actorId: ops.id },
-      { to: "CLASSIFICATION_REVIEW", ctx: ctxApproved, at: daysAgo(9), actorId: broker.id, note: "Regulated line — broker review required" },
-      { to: "QUOTE_READY", ctx: ctxApproved, at: daysAgo(8), actorId: broker.id },
-    ]);
-
-    const { invoice, total } = await issueQuoteAndInvoice({
-      shipmentReference: reference, shipmentId: shipment.id, estimateResult: result, chargeTypeIdByCode,
-      brokerApproved: true, quoteStatus: "ACCEPTED", quotedAt: daysAgo(8),
-      billToEmail: consumer1.email, businessId: null,
-      invoiceStatus: "ISSUED", issuedAt: daysAgo(8),
-    });
-
-    await walk(shipment.id, "QUOTE_READY", [{ to: "AWAITING_PAYMENT", ctx: ctxApproved, at: daysAgo(8), actorId: consumer1.id }]);
-    await payInFull(invoice.id, total, daysAgo(7), ops.id);
-
-    const ctxPaid: TransitionGuardContext = { brokerApproved: true, invoiceSettled: true, hasRequiredDocuments: true };
-    await walk(shipment.id, "AWAITING_PAYMENT", [
-      { to: "PAID", ctx: ctxPaid, at: daysAgo(7), actorId: ops.id },
-      { to: "ARRIVED_BAHAMAS", ctx: ctxPaid, at: daysAgo(5), actorId: ops.id, note: "Courier manifest confirms arrival" },
-      { to: "DECLARATION_PREPARED", ctx: ctxPaid, at: daysAgo(4), actorId: broker.id },
-      { to: "SUBMITTED_TO_CUSTOMS", ctx: ctxPaid, at: daysAgo(4), actorId: broker.id },
-      { to: "CUSTOMS_REVIEW", ctx: ctxPaid, at: daysAgo(4), actorId: broker.id },
-      { to: "CUSTOMS_RELEASED", ctx: ctxPaid, at: daysAgo(3), actorId: broker.id },
-      { to: "READY_FOR_DELIVERY", ctx: ctxPaid, at: daysAgo(2), actorId: ops.id },
-      { to: "OUT_FOR_DELIVERY", ctx: ctxPaid, at: daysAgo(1), actorId: driverUser.id },
-      { to: "DELIVERED", ctx: ctxPaid, at: hoursAgo(20), actorId: driverUser.id },
-    ]);
-
-    await prisma.customsDeclaration.create({
-      data: {
-        shipmentId: shipment.id, status: "RELEASED", entryNumber: "C2C-2026-004821", regimeCode: "IM4",
-        submittedAt: daysAgo(4), submittedBy: broker.id, assessedTotal: result.governmentTotal,
-        releasedAt: daysAgo(3), adapter: "manual",
-        payloadJson: { reference, lines: 1, declarant: broker.id } as never,
-      },
-    });
-
-    const deliveryFee = summariseCharges(result.charges).find((c) => c.chargeCode === "DELIVERY")?.amount ?? "25.00";
-    await prisma.delivery.create({
-      data: {
-        shipmentId: shipment.id, addressId: marcusAddress.id, driverId: driver.id, status: "DELIVERED",
-        scheduledFor: daysAgo(2), fee: deliveryFee, signatureName: "M. Deveaux",
-        podStorageKey: `shipments/${shipment.id}/pod.jpg`, deliveredAt: hoursAgo(20),
-      },
-    });
-
-    const exceptionInput: ExceptionInput = {
-      hasCommercialInvoice: true, freightCost, goodsValue, freightMode: "COURIER",
-      lines: [{ lineNumber: 1, hsCode: "2208.40.00", lineValue: goodsValue, regulated: true }],
-      status: "DELIVERED", statusChangedAt: hoursAgo(20), now: NOW,
-      quotedGovernmentTotal: result.governmentTotal, assessedGovernmentTotal: result.governmentTotal,
-    };
-    const flags = detectExceptions(exceptionInput);
-    await prisma.exceptionFlag.createMany({
-      data: flags.map((f) => ({
-        shipmentId: shipment.id, code: f.code, severity: f.severity, message: f.message,
-        resolvedAt: f.code === "PERMIT_REQUIRED" ? daysAgo(4) : null,
-        resolvedBy: f.code === "PERMIT_REQUIRED" ? broker.id : null,
-      })),
-    });
-  }
-
-  // Shipment D — Island Hardware's shipment, currently held by customs for inspection.
-  {
-    const description = "Frozen fish fillets, assorted, 200kg";
-    const quantity = "200";
-    const unitValue = "6.50";
-    const lineValue = cents(money(quantity).times(money(unitValue))).toFixed(2);
-    const lines: LineInput[] = [{ lineNumber: 1, description, quantity, lineValue, hsCode: "0303.00.00" }];
-    const goodsValue = lineValue;
-    const freightCost = "640.00";
-    const insuranceCost = "25.00";
-
-    const result = await estimate(
-      { goodsValue, freightCost, insuranceCost, grossWeightKg: "205.000" }, lines,
-      { businessId: business.id, importType: "COMMERCIAL", planCode: "BUSINESS_PRO", brokerageDiscount: businessPro.brokerageDiscount.toString(), deliveryDiscount: businessPro.deliveryDiscount.toString() },
-    );
-
-    const reference = await nextReference();
-    const shipment = await prisma.shipment.create({
-      data: {
-        reference, ownerId: bizUser.id, businessId: business.id, importType: "COMMERCIAL", freightMode: "SEA",
-        supplierId: globalMarine.id, description,
-        goodsValue, freightCost, insuranceCost, grossWeightKg: "205.000",
-        status: "DRAFT", estimateJson: result as never, estimatedAt: daysAgo(6),
-        createdAt: daysAgo(7), updatedAt: daysAgo(6),
-        items: { create: [{
-          lineNumber: 1, description, quantity, unitValue, lineValue,
-          hsCodeId: hsCodeIdByCode.get("0303.00.00")!, suggestedHsCode: "0303.00.00", confidence: "0.570",
-          classificationStatus: "BROKER_APPROVED", brokerNote: "Fisheries permit on file for this supplier.",
-        }] },
-        history: { create: { to: "DRAFT", actorId: bizUser.id, note: "Shipment created", createdAt: daysAgo(7) } },
-      },
-      include: { items: true },
-    });
-
-    await prisma.shipmentDocument.create({
-      data: {
-        shipmentId: shipment.id, kind: "COMMERCIAL_INVOICE", fileName: "global-marine-invoice-2216.pdf",
-        mimeType: "application/pdf", sizeBytes: 143_009, storageKey: `shipments/${shipment.id}/commercial-invoice.pdf`,
-        scanStatus: "CLEAN", uploadedBy: bizUser.id, createdAt: daysAgo(7),
-      },
-    });
-
-    const ctxApproved: TransitionGuardContext = { brokerApproved: true, invoiceSettled: false, hasRequiredDocuments: true };
-    await walk(shipment.id, "DRAFT", [
-      { to: "DOCUMENTS_RECEIVED", ctx: ctxApproved, at: daysAgo(7), actorId: bizUser.id },
-      { to: "UNDER_REVIEW", ctx: ctxApproved, at: daysAgo(6), actorId: ops.id },
-      { to: "CLASSIFICATION_REVIEW", ctx: ctxApproved, at: daysAgo(6), actorId: broker.id },
-      { to: "QUOTE_READY", ctx: ctxApproved, at: daysAgo(5), actorId: broker.id },
-    ]);
-
-    const { invoice, total } = await issueQuoteAndInvoice({
-      shipmentReference: reference, shipmentId: shipment.id, estimateResult: result, chargeTypeIdByCode,
-      brokerApproved: true, quoteStatus: "ACCEPTED", quotedAt: daysAgo(5),
-      billToEmail: business.billingEmail!, businessId: business.id,
-      invoiceStatus: "ISSUED", issuedAt: daysAgo(5),
-    });
-
-    await walk(shipment.id, "QUOTE_READY", [{ to: "AWAITING_PAYMENT", ctx: ctxApproved, at: daysAgo(5), actorId: bizAdmin.id }]);
-    await payInFull(invoice.id, total, daysAgo(4), ops.id);
-
-    const ctxPaid: TransitionGuardContext = { brokerApproved: true, invoiceSettled: true, hasRequiredDocuments: true };
-    const finalStatus = await walk(shipment.id, "AWAITING_PAYMENT", [
-      { to: "PAID", ctx: ctxPaid, at: daysAgo(4), actorId: ops.id },
-      { to: "FREIGHT_IN_TRANSIT", ctx: ctxPaid, at: daysAgo(4), actorId: ops.id },
-      { to: "ARRIVED_BAHAMAS", ctx: ctxPaid, at: daysAgo(3), actorId: ops.id },
-      { to: "DECLARATION_PREPARED", ctx: ctxPaid, at: daysAgo(3), actorId: broker.id },
-      { to: "SUBMITTED_TO_CUSTOMS", ctx: ctxPaid, at: daysAgo(3), actorId: broker.id },
-      { to: "CUSTOMS_HOLD", ctx: ctxPaid, at: daysAgo(3), actorId: ops.id, note: "Selected for physical inspection per manifest risk score" },
-    ]);
-
-    await prisma.customsDeclaration.create({
-      data: {
-        shipmentId: shipment.id, status: "QUERIED", entryNumber: "C2C-2026-004907", regimeCode: "IM4",
-        submittedAt: daysAgo(3), submittedBy: broker.id, adapter: "manual",
-        payloadJson: { reference, lines: 1, declarant: broker.id, hold: "physical inspection" } as never,
-      },
-    });
-
-    const exceptionInput: ExceptionInput = {
-      hasCommercialInvoice: true, freightCost, goodsValue, freightMode: "SEA",
-      lines: [{ lineNumber: 1, hsCode: "0303.00.00", lineValue: goodsValue, regulated: true }],
-      status: finalStatus as ShipmentStatus, statusChangedAt: daysAgo(3), now: NOW,
-      quotedGovernmentTotal: result.governmentTotal,
-    };
-    const flags = detectExceptions(exceptionInput);
-    await prisma.exceptionFlag.createMany({
-      data: flags.map((f) => ({ shipmentId: shipment.id, code: f.code, severity: f.severity, message: f.message })),
-    });
-
-    const ticket = await prisma.supportTicket.create({
-      data: {
-        reference: `TCK-${reference}`, userId: bizUser.id, shipmentId: shipment.id, category: "customs",
-        subject: "Why is my shipment on hold?", status: "WAITING_STAFF", createdAt: daysAgo(2),
-      },
-    });
-    await prisma.supportMessage.createMany({
-      data: [
-        { ticketId: ticket.id, authorId: bizUser.id, body: "Customs has held our frozen fish shipment for two days now — can you find out what's happening?", internal: false, createdAt: daysAgo(2) },
-        { ticketId: ticket.id, authorId: ops.id, body: "Flagged for physical inspection per manifest risk score. Following up with the examining officer.", internal: true, createdAt: daysAgo(2) },
-        { ticketId: ticket.id, authorId: ops.id, body: "Your shipment was selected for a routine physical inspection. We expect an update within two business days and will let you know the moment it clears.", internal: false, createdAt: daysAgo(1) },
-      ],
-    });
-  }
-
-  // ─────────────────────────────── CRM & procurement ────────────────────────────
-  const leadNauticalTraders = await prisma.lead.create({
+  // ── Support, CRM and procurement ──
+  const heldShipment = await prisma.shipment.findFirstOrThrow({ where: { status: "CUSTOMS_HOLD" } });
+  const ticket = await prisma.supportTicket.create({
     data: {
-      company: "Nassau Auto Traders", contactName: "Ryan Munroe", email: "ryan@nassauautotraders.example.com",
-      industry: "Auto parts retail", monthlyVolume: "45000.00", currentBroker: "Self-filed",
-      stage: "QUALIFIED", ownerId: ops.id, nextFollowUp: daysAgo(-5),
-      notes: "Interested in switching from self-filing. Wants a brokerage + delivery bundle.",
-      createdAt: daysAgo(14),
+      reference: `TCK-${heldShipment.reference}`, userId: heldShipment.ownerId, shipmentId: heldShipment.id,
+      category: "customs", subject: "Why is my shipment on hold?", status: "WAITING_STAFF", createdAt: daysAgo(2),
     },
   });
-  await prisma.crmActivity.create({
-    data: { leadId: leadNauticalTraders.id, actorId: ops.id, kind: "call", summary: "Intro call — walked through the Business Pro plan and delivery bundle.", occurredAt: daysAgo(14) },
+  await prisma.supportMessage.createMany({
+    data: [
+      { ticketId: ticket.id, authorId: heldShipment.ownerId, body: "Customs has held this shipment for two days now — can you find out what's happening?", internal: false, createdAt: daysAgo(2) },
+      { ticketId: ticket.id, authorId: ops.id, body: "Flagged for physical inspection per manifest risk score. Following up with the examining officer.", internal: true, createdAt: daysAgo(2) },
+      { ticketId: ticket.id, authorId: ops.id, body: "Your shipment was selected for a routine physical inspection. We expect an update within two business days.", internal: false, createdAt: daysAgo(1) },
+    ],
   });
 
-  const leadBoutique = await prisma.lead.create({
-    data: {
-      company: "Paradise Isle Boutique", contactName: "Alicia Curry", email: "alicia@paradiseisleboutique.example.com",
-      industry: "Retail apparel", monthlyVolume: "12000.00", currentBroker: "Competitor brokerage",
-      stage: "PROPOSAL", ownerId: broker.id, nextFollowUp: daysAgo(-2),
-      notes: "Sent Business Starter plan proposal after a rate comparison.",
-      createdAt: daysAgo(9),
-    },
-  });
-  await prisma.crmActivity.create({
-    data: { leadId: leadBoutique.id, actorId: broker.id, kind: "email", summary: "Sent Business Starter plan proposal and sample landed-cost breakdown.", occurredAt: daysAgo(9) },
-  });
+  const leadSpecs = [
+    { company: "Nassau Auto Traders", contactName: "Ryan Munroe", email: "ryan@nassauautotraders.example.com", industry: "Auto parts retail", monthlyVolume: "45000.00", currentBroker: "Self-filed", stage: "QUALIFIED" as const, ownerId: ops.id, kind: "call", summary: "Intro call — walked through the Business Pro plan and delivery bundle." },
+    { company: "Cable Beach Resorts Ltd", contactName: "Yvette Deleveaux", email: "yvette@cablebeachresorts.example.com", industry: "Hospitality", monthlyVolume: "88000.00", currentBroker: "Competitor brokerage", stage: "PROPOSAL" as const, ownerId: broker2.id, kind: "email", summary: "Sent proposal covering FF&E imports and bonded storage." },
+    { company: "Exuma Marine Charters", contactName: "Kirk Bethel", email: "kirk@exumamarine.example.com", industry: "Marine tourism", monthlyVolume: "16000.00", currentBroker: "Self-filed", stage: "CONTACTED" as const, ownerId: ops2.id, kind: "note", summary: "Inbound enquiry about parts imports for charter fleet." },
+  ];
+  for (const [i, lead] of leadSpecs.entries()) {
+    const created = await prisma.lead.create({
+      data: {
+        company: lead.company, contactName: lead.contactName, email: lead.email, industry: lead.industry,
+        monthlyVolume: lead.monthlyVolume, currentBroker: lead.currentBroker, stage: lead.stage,
+        ownerId: lead.ownerId, nextFollowUp: daysAgo(-(i + 2)), createdAt: daysAgo(14 - i * 3),
+      },
+    });
+    await prisma.crmActivity.create({
+      data: { leadId: created.id, actorId: lead.ownerId, kind: lead.kind, summary: lead.summary, occurredAt: daysAgo(14 - i * 3) },
+    });
+  }
 
   const procurement = await prisma.procurementRequest.create({
     data: {
-      reference: "PR-2026-0001", businessId: business.id, requestedBy: bizUser.id,
+      reference: "PR-2026-0001", businessId: businesses[0]!.id, requestedBy: businesses[0]!.userId,
       productUrl: "https://example-supplier.test/product/marine-cleats-8in",
       description: "Stainless steel marine cleats, 8-inch, bulk order", quantity: 200,
       specifications: "316-grade stainless steel, bulk packed", targetBudget: "3200.00",
@@ -902,7 +903,6 @@ async function main() {
     insurance: money("25.00"), governmentEstimate: money("410.00"), procurementFee: money("130.00"),
     brokerageFee: money("65.00"), deliveryFee: money("25.00"),
   };
-  const procurementTotal = cents(Object.values(procurementLines).reduce((acc, v) => acc.plus(v), money(0))).toFixed(2);
   await prisma.procurementQuote.create({
     data: {
       requestId: procurement.id,
@@ -910,19 +910,35 @@ async function main() {
       internationalFreight: procurementLines.internationalFreight.toFixed(2), insurance: procurementLines.insurance.toFixed(2),
       governmentEstimate: procurementLines.governmentEstimate.toFixed(2), procurementFee: procurementLines.procurementFee.toFixed(2),
       brokerageFee: procurementLines.brokerageFee.toFixed(2), deliveryFee: procurementLines.deliveryFee.toFixed(2),
-      total: procurementTotal, validUntil: daysAgo(-14), preparedBy: ops.id, createdAt: daysAgo(4),
+      total: cents(Object.values(procurementLines).reduce((acc, v) => acc.plus(v), money(0))).toFixed(2),
+      validUntil: daysAgo(-14), preparedBy: ops.id, createdAt: daysAgo(4),
     },
   });
 
-  // ─────────────────────────────── Summary ──────────────────────────────────────
+  // ── Summary ──
+  const [userCount, shipmentCount, invoiceCount, paymentCount, docCount, deliveryCount] = await Promise.all([
+    prisma.user.count(), prisma.shipment.count(), prisma.invoice.count(),
+    prisma.payment.count(), prisma.shipmentDocument.count(), prisma.delivery.count(),
+  ]);
+
   console.log("\nSeed complete.\n");
   console.log(`Dev login password for every seeded account: ${DEV_PASSWORD}\n`);
-  console.log("Accounts:");
-  for (const u of [admin, broker, ops, driverUser, bizAdmin, bizUser, consumer1, consumer2]) {
+  console.log("Staff accounts:");
+  for (const u of [admin, broker, broker2, ops, ops2, driverUser, driverUser2]) {
     console.log(`  ${u.role.padEnd(14)} ${u.email}`);
   }
-  console.log(`\nBusiness: ${business.legalName} (${business.id})`);
-  console.log(`Shipments seeded: ${shipmentSeq}`);
+  console.log("\nConsumers:");
+  for (const c of consumers) console.log(`  CONSUMER       ${c.user.email}`);
+  console.log("\nBusinesses (owner@ / imports@ each):");
+  for (const spec of businessSpecs) console.log(`  ${spec.legalName} — ${spec.domain}`);
+
+  console.log(`\n${userCount} users, ${businesses.length} businesses, ${suppliers.length} suppliers, ${shipmentCount} shipments`);
+  console.log(`${invoiceCount} invoices, ${paymentCount} payments, ${docCount} documents, ${deliveryCount} deliveries`);
+  console.log("\nShipments by status:");
+  for (const [status, count] of [...statusCounts.entries()].sort()) {
+    console.log(`  ${status.padEnd(22)} ${count}`);
+  }
+  console.log("\nEvery seeded RateRule is confirmed=false — no rate here is authoritative.");
 }
 
 main()
