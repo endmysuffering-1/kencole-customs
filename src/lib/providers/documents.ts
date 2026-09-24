@@ -70,7 +70,8 @@ class ExternalDocumentProvider implements DocumentProvider {
     });
     if (!res.ok) throw new Error(`Extraction failed with status ${res.status}.`);
     const data = (await res.json()) as Partial<ExtractedInvoice>;
-    return { lines: data.lines ?? [], confidence: data.confidence ?? 0, ...data };
+    // Defaults last, so a provider sending null cannot wipe them.
+    return { ...data, lines: data.lines ?? [], confidence: data.confidence ?? 0 };
   }
 }
 

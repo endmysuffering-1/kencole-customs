@@ -1,8 +1,12 @@
+import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { recordAudit } from "@/lib/audit";
 import { cents, money } from "@/lib/money";
 import { DomainError } from "./errors";
 import { nextInvoiceReference } from "./references";
+import { invoiceScope } from "./shipment-queries";
+import { payments } from "@/lib/providers/payments";
+import type { Principal } from "@/lib/auth/rbac";
 
 /**
  * Invoicing.
@@ -15,78 +19,87 @@ import { nextInvoiceReference } from "./references";
  */
 
 export async function issueInvoiceForQuote(quoteId: string, actorId: string) {
-  const invoice = await db.$transaction(async (tx) => {
-    // One live invoice per quote. The row lock makes a double-submit wait here,
-    // then find the first request's invoice and be refused, instead of both
-    // requests billing the customer.
-    await tx.$queryRaw`SELECT id FROM "Quote" WHERE id = ${quoteId} FOR UPDATE`;
+  return db.$transaction((tx) => invoiceQuote(tx, quoteId, actorId));
+}
 
-    const quote = await tx.quote.findUnique({
-      where: { id: quoteId },
-      include: {
-        charges: { include: { chargeType: true } },
-        shipment: { include: { owner: true, business: true } },
-      },
-    });
-    if (!quote) throw new DomainError("Quote not found.", 404);
-    if (quote.status === "SUPERSEDED" || quote.status === "EXPIRED") {
-      throw new DomainError("That quote is no longer current. Issue a fresh one.");
-    }
-    if (quote.shipment.status === "CANCELLED") {
-      throw new DomainError("That shipment has been cancelled.");
-    }
+/**
+ * Raises the invoice for a quote inside the caller's transaction, so a flow that
+ * also moves the shipment (accepting a quote) commits both or neither.
+ */
+export async function invoiceQuote(tx: Prisma.TransactionClient, quoteId: string, actorId: string) {
+  // One live invoice per quote. The row lock makes a double-submit wait here,
+  // then find the first request's invoice and be refused, instead of both
+  // requests billing the customer.
+  await tx.$queryRaw`SELECT id FROM "Quote" WHERE id = ${quoteId} FOR UPDATE`;
 
-    const existing = await tx.invoice.findFirst({
-      where: { quoteId, status: { not: "VOIDED" } },
-      select: { reference: true },
-    });
-    if (existing) {
-      throw new DomainError(`This quote has already been invoiced as ${existing.reference}.`, 409);
-    }
-
-    const shipment = quote.shipment;
-    const reference = await nextInvoiceReference(shipment.id, shipment.reference, tx);
-
-    const lines = quote.charges
-      .sort((a, b) => a.chargeType.sortOrder - b.chargeType.sortOrder)
-      .map((c, index) => ({
-        description: c.chargeType.label,
-        payee: c.payee,
-        amount: c.amount.toString(),
-        chargeCode: c.chargeType.code,
-        sortOrder: index,
-      }));
-
-    return tx.invoice.create({
-      data: {
-        reference,
-        shipmentId: shipment.id,
-        quoteId: quote.id,
-        businessId: shipment.businessId,
-        billToEmail: shipment.business?.billingEmail ?? shipment.owner.email,
-        status: "ISSUED",
-        governmentTotal: quote.governmentTotal,
-        brokerTotal: quote.brokerTotal,
-        total: cents(money(quote.governmentTotal).plus(money(quote.brokerTotal))).toFixed(2),
-        issuedAt: new Date(),
-        dueAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 7),
-        lines: { create: lines },
-      },
-      include: { lines: true },
-    });
-  });
-
-  await recordAudit({
-    actorId,
-    action: "invoice.issued",
-    entityType: "Invoice",
-    entityId: invoice.id,
-    newValue: {
-      reference: invoice.reference,
-      governmentTotal: invoice.governmentTotal.toString(),
-      brokerTotal: invoice.brokerTotal.toString(),
+  const quote = await tx.quote.findUnique({
+    where: { id: quoteId },
+    include: {
+      charges: { include: { chargeType: true } },
+      shipment: { include: { owner: true, business: true } },
     },
   });
+  if (!quote) throw new DomainError("Quote not found.", 404);
+  if (quote.status === "SUPERSEDED" || quote.status === "EXPIRED") {
+    throw new DomainError("That quote is no longer current. Issue a fresh one.");
+  }
+  if (quote.shipment.status === "CANCELLED") {
+    throw new DomainError("That shipment has been cancelled.");
+  }
+
+  const existing = await tx.invoice.findFirst({
+    where: { quoteId, status: { not: "VOIDED" } },
+    select: { reference: true },
+  });
+  if (existing) {
+    throw new DomainError(`This quote has already been invoiced as ${existing.reference}.`, 409);
+  }
+
+  const shipment = quote.shipment;
+  const reference = await nextInvoiceReference(shipment.id, shipment.reference, tx);
+
+  const lines = quote.charges
+    .sort((a, b) => a.chargeType.sortOrder - b.chargeType.sortOrder)
+    .map((c, index) => ({
+      description: c.chargeType.label,
+      payee: c.payee,
+      amount: c.amount.toString(),
+      chargeCode: c.chargeType.code,
+      sortOrder: index,
+    }));
+
+  const invoice = await tx.invoice.create({
+    data: {
+      reference,
+      shipmentId: shipment.id,
+      quoteId: quote.id,
+      businessId: shipment.businessId,
+      billToEmail: shipment.business?.billingEmail ?? shipment.owner.email,
+      status: "ISSUED",
+      governmentTotal: quote.governmentTotal,
+      brokerTotal: quote.brokerTotal,
+      total: cents(money(quote.governmentTotal).plus(money(quote.brokerTotal))).toFixed(2),
+      issuedAt: new Date(),
+      dueAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 7),
+      lines: { create: lines },
+    },
+    include: { lines: true },
+  });
+
+  await recordAudit(
+    {
+      actorId,
+      action: "invoice.issued",
+      entityType: "Invoice",
+      entityId: invoice.id,
+      newValue: {
+        reference,
+        governmentTotal: invoice.governmentTotal.toString(),
+        brokerTotal: invoice.brokerTotal.toString(),
+      },
+    },
+    tx,
+  );
 
   return invoice;
 }
@@ -177,4 +190,23 @@ export async function revenueBetween(from: Date, to: Date) {
     outstanding: cents(outstanding).toFixed(2),
     invoiceCount: invoices.length,
   };
+}
+
+/**
+ * How to pay an invoice. Card processing is not wired up, so today this is bank
+ * transfer instructions quoting the invoice reference; staff record the payment
+ * when it arrives.
+ */
+export async function paymentInstructions(principal: Principal, invoiceId: string) {
+  const invoice = await db.invoice.findFirst({ where: { AND: [invoiceScope(principal), { id: invoiceId }] } });
+  if (!invoice) throw new DomainError("Invoice not found.", 404);
+  if (["PAID", "VOIDED", "REFUNDED"].includes(invoice.status)) {
+    throw new DomainError("Nothing is owed on that invoice.", 409);
+  }
+  const outstanding = cents(money(invoice.total).minus(money(invoice.amountPaid))).toFixed(2);
+  const intent = await payments.createIntent({
+    invoiceId: invoice.reference, amount: outstanding, currency: "BSD",
+    method: "bank_transfer", customerEmail: invoice.billToEmail,
+  });
+  return { reference: invoice.reference, outstanding, currency: "BSD", method: "bank_transfer", instructions: intent.instructions };
 }

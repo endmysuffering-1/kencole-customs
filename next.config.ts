@@ -9,10 +9,15 @@ const config: NextConfig = {
         source: "/:path*",
         headers: [
           { key: "X-Content-Type-Options", value: "nosniff" },
-          { key: "X-Frame-Options", value: "DENY" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
           { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(self)" },
         ],
+      },
+      {
+        // Nothing may be framed, except a shipment document inside our own broker
+        // review screen: that route sends SAMEORIGIN and frame-ancestors 'self'.
+        source: "/((?!api/v1/documents/).*)",
+        headers: [{ key: "X-Frame-Options", value: "DENY" }],
       },
     ];
   },

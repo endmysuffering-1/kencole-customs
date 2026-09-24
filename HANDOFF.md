@@ -2,7 +2,7 @@
 
 A B2B + B2C customs brokerage and import management platform for a licensed
 customs broker in The Bahamas. This package contains the schema, the domain and
-service layers, and a development seed. The UI and API routes are not built yet.
+service layers, a development seed and the `/api/v1` routes. The UI is not built yet.
 
 ## What is here and working
 
@@ -70,6 +70,30 @@ unless `SEED_ALLOW_NON_LOCAL=1`, because the accounts it creates share a
 password that is in the repository. It also refuses a database that already has
 users; `npm run db:reset` wipes and reseeds.
 
+**API** — `src/app/api/v1/`. Handlers are thin: parse with zod, check the
+session, call a service, return JSON. `src/lib/api/respond.ts` turns service
+errors into responses. Every list and read goes through the scopes in
+`src/lib/services/shipment-queries.ts`, and a record someone may not see is 404,
+not 403. Customer responses omit machine suggestions, exception flags, internal
+notes and internal status names. Each quoted government charge carries
+`unverified` from its rate rule.
+
+| Route | Who |
+| --- | --- |
+| `POST auth/register`, `POST auth/login`, `POST auth/logout`, `GET auth/me` | anyone / signed in |
+| `POST estimate`, `GET hs-codes?q=` | public |
+| `GET, POST shipments` · `GET, PATCH shipments/:id` | signed in, scoped; customers edit until review starts |
+| `POST shipments/:id/transitions` | staff; `SUBMITTED_TO_CUSTOMS` needs the broker; a customer may only withdraw early |
+| `POST shipments/:id/quotes` · `POST quotes/:id/accept` | `quote:issue` · the customer, broker-approved quotes only |
+| `POST documents/upload` · `GET documents/:id` | owner or staff (multipart; type checked against the bytes) |
+| `POST classification/suggestions` · `POST classification/decisions` | `classification:suggest` · `classification:approve` |
+| `GET, POST invoices` · `GET invoices/:id` · `GET invoices/:id/payment-instructions` · `POST invoices/:id/payments` | scoped · `invoice:issue` · owner · `payment:record` |
+
+Accepting a quote, moving the shipment to `AWAITING_PAYMENT` and raising the
+invoice happen in one transaction. A payment that settles an invoice moves the
+shipment to `PAID`. Only USD and BSD are accepted until exchange rates are
+configurable (TODO in `schemas.ts`).
+
 **Reference numbers** — `src/lib/services/references.ts`. Shipment, quote and
 invoice references come from `ReferenceCounter`, advanced atomically, so a number
 is never issued twice or re-issued after a delete. Years are taken in
@@ -100,7 +124,6 @@ not even `SUPER_ADMIN`, since administering the system is not holding the licenc
 ## Not built yet
 
 - All UI: public site, calculator, consumer dashboard, ops queues, broker review
-- API routes under `/api/v1/`
 - A production path for loading reference data (charge types, rates, HS codes,
   plans). Today only the seed creates it, and the seed will not run in production
 - Refunds. Cancelling a shipment voids invoices with nothing paid against them;

@@ -17,7 +17,7 @@ export type AuditAction =
   | "shipment.status_changed" | "shipment.deleted"
   | "classification.suggested" | "classification.changed" | "classification.approved"
   | "rate.changed" | "pricing.changed" | "plan.changed"
-  | "quote.issued" | "invoice.issued" | "invoice.voided" | "payment.recorded" | "payment.refunded"
+  | "quote.issued" | "quote.accepted" | "invoice.issued" | "invoice.voided" | "payment.recorded" | "payment.refunded"
   | "document.uploaded" | "document.deleted"
   | "declaration.prepared" | "declaration.submitted" | "declaration.reference_changed"
   | "exception.resolved";

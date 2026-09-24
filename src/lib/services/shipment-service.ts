@@ -15,7 +15,16 @@ import { readyForDeclaration } from "@/lib/domain/classification";
 import { loadPricingRules, loadRateBook } from "./rate-book";
 import { nextQuoteReference, nextShipmentReference } from "./references";
 import { DomainError } from "./errors";
-import type { ShipmentInput } from "@/lib/validation/schemas";
+import {
+  SUPPORTED_CURRENCIES,
+  type ShipmentInput,
+  type shipmentUpdateSchema,
+  type estimateSchema,
+} from "@/lib/validation/schemas";
+import type { z } from "zod";
+import { can, canAccessResource, type Capability, type Principal } from "@/lib/auth/rbac";
+import { invoiceQuote } from "./invoice-service";
+import { shipmentScope } from "./shipment-queries";
 import { notify } from "@/lib/providers/notifications";
 
 export async function createShipment(input: {
@@ -24,6 +33,7 @@ export async function createShipment(input: {
   businessId?: string | null;
 }) {
   const { data, ownerId, businessId } = input;
+  assertSupportedCurrency(data.currency);
 
   let supplierId: string | null = null;
   if (data.supplierName) {
@@ -432,4 +442,306 @@ export async function issueQuote(shipmentId: string, actorId: string) {
   });
 
   return quote;
+}
+
+// ─── Acting on shipments for a person ─────────────────────────────────────────
+
+type ShipmentUpdate = z.infer<typeof shipmentUpdateSchema>;
+type EstimateInput = z.infer<typeof estimateSchema>;
+
+export function assertSupportedCurrency(currency: string | undefined) {
+  if (currency && !(SUPPORTED_CURRENCIES as readonly string[]).includes(currency.toUpperCase())) {
+    throw new DomainError(
+      `We can only cost shipments in ${SUPPORTED_CURRENCIES.join(" or ")} for now. Convert the invoice values and try again.`,
+    );
+  }
+}
+
+/** Statuses in which the customer still owns the paperwork and may change it. */
+const OWNER_EDITABLE: ShipmentStatus[] = ["DRAFT", "DOCUMENTS_REQUIRED", "DOCUMENTS_RECEIVED"];
+const FINAL: ShipmentStatus[] = ["DELIVERED", "CANCELLED"];
+
+/**
+ * Opens a shipment for a person. A business shipment is only opened for a member
+ * of that business; with no business named, a member of exactly one business
+ * files under it, and anyone else files personally.
+ */
+export async function openShipment(input: {
+  principal: Principal;
+  data: ShipmentInput & { businessId?: string };
+}) {
+  const { principal, data } = input;
+  let businessId = data.businessId ?? null;
+  if (businessId && !principal.businessIds.includes(businessId)) {
+    throw new DomainError("You can only file shipments for a business you belong to.", 403);
+  }
+  if (!businessId && principal.businessIds.length === 1 && principal.role !== "CONSUMER") {
+    businessId = principal.businessIds[0]!;
+  }
+
+  const shipment = await createShipment({
+    ownerId: principal.id,
+    businessId,
+    data: { ...data, importType: businessId ? "COMMERCIAL" : data.importType },
+  });
+  await estimateShipment(shipment.id);
+  await refreshExceptions(shipment.id);
+  return shipment;
+}
+
+/**
+ * Changes a shipment's details. The customer may change their own shipment until
+ * review starts; after that only staff may, and a change to any value or line
+ * needs a reason, re-opens classification, and withdraws the quotes that were
+ * priced on the old figures.
+ */
+export async function updateShipment(input: { principal: Principal; shipmentId: string; data: ShipmentUpdate }) {
+  const { principal, shipmentId, data } = input;
+  const found = await db.shipment.findFirst({ where: { AND: [shipmentScope(principal), { id: shipmentId }] } });
+  if (!found || !canAccessResource(principal, found, "write")) throw new DomainError("Shipment not found.", 404);
+
+  const staff = can(principal.role, "shipment:edit:any");
+  if (FINAL.includes(found.status)) throw new DomainError("A finished shipment can't be changed.", 409);
+  if (!staff && !OWNER_EDITABLE.includes(found.status)) {
+    throw new DomainError("We've started working on this shipment. Contact us to change it.", 409);
+  }
+  assertSupportedCurrency(data.currency);
+
+  const valueFields = ["goodsValue", "freightCost", "insuranceCost", "currency"] as const;
+  const valueChanged =
+    data.items !== undefined ||
+    valueFields.some((f) => data[f] !== undefined && String(data[f]) !== String(found[f]));
+  const pastIntake = !OWNER_EDITABLE.includes(found.status);
+  const reason = data.reason?.trim();
+  if (valueChanged && pastIntake && !reason) {
+    throw new DomainError("Give a reason for changing values on a shipment that is already under way.");
+  }
+
+  await db.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "Shipment" WHERE id = ${shipmentId} FOR UPDATE`;
+    const current = await tx.shipment.findUniqueOrThrow({ where: { id: shipmentId } });
+    if (current.status !== found.status) {
+      throw new DomainError("The shipment changed while you were working on it. Reload and try again.", 409);
+    }
+
+    let supplierId = current.supplierId;
+    if (data.supplierName) {
+      const existing = await tx.supplier.findFirst({ where: { name: data.supplierName, businessId: current.businessId } });
+      supplierId = existing?.id ?? (
+        await tx.supplier.create({
+          data: { name: data.supplierName, country: data.supplierCountry || "US", businessId: current.businessId },
+        })
+      ).id;
+    }
+
+    await tx.shipment.update({
+      where: { id: shipmentId },
+      data: {
+        supplierId,
+        freightMode: data.freightMode,
+        trackingNumber: data.trackingNumber,
+        airwayBill: data.airwayBill,
+        originCountry: data.originCountry,
+        description: data.description,
+        currency: data.currency?.toUpperCase(),
+        goodsValue: data.goodsValue,
+        freightCost: data.freightCost,
+        insuranceCost: data.insuranceCost,
+      },
+    });
+
+    if (data.items) {
+      await tx.shipmentItem.deleteMany({ where: { shipmentId } });
+      await tx.shipmentItem.createMany({
+        data: data.items.map((item, index) => ({
+          shipmentId,
+          lineNumber: index + 1,
+          description: item.description,
+          quantity: item.quantity,
+          unitValue: item.unitValue,
+          lineValue: cents(money(item.quantity).times(money(item.unitValue))).toFixed(2),
+          originCountry: item.originCountry || null,
+        })),
+      });
+    }
+
+    // A quote priced on the old figures must not be accepted or invoiced.
+    if (valueChanged) {
+      await tx.quote.updateMany({
+        where: { shipmentId, status: { in: ["DRAFT", "ISSUED"] } },
+        data: { status: "SUPERSEDED" },
+      });
+    }
+
+    const changed = Object.fromEntries(
+      Object.entries(data).filter(([k, v]) => k !== "reason" && k !== "items" && v !== undefined),
+    );
+    await recordAudit(
+      {
+        actorId: principal.id,
+        action: valueChanged && pastIntake ? "shipment.value_changed" : "shipment.updated",
+        entityType: "Shipment",
+        entityId: shipmentId,
+        oldValue: Object.fromEntries(Object.keys(changed).map((k) => [k, String(current[k as keyof typeof current] ?? "")])),
+        newValue: { ...changed, ...(data.items ? { lines: data.items.length } : {}) },
+        reason,
+      },
+      tx,
+    );
+  });
+
+  await estimateShipment(shipmentId);
+  await refreshExceptions(shipmentId);
+  return db.shipment.findUniqueOrThrow({ where: { id: shipmentId } });
+}
+
+/** Status changes that need more than shipment:transition. */
+const STATUS_CAPABILITY: Partial<Record<ShipmentStatus, Capability>> = {
+  DECLARATION_PREPARED: "declaration:prepare",
+  SUBMITTED_TO_CUSTOMS: "declaration:submit",
+};
+
+/**
+ * A status change requested by a person. Staff move shipments through the
+ * workflow; submitting to customs additionally needs the broker's licence. A
+ * customer's only move is to withdraw their own shipment before review starts.
+ */
+export async function requestTransition(input: {
+  principal: Principal;
+  shipmentId: string;
+  to: ShipmentStatus;
+  note?: string;
+}) {
+  const { principal, shipmentId, to } = input;
+  const shipment = await db.shipment.findFirst({
+    where: { AND: [shipmentScope(principal), { id: shipmentId }] },
+    select: { id: true, status: true, ownerId: true, businessId: true },
+  });
+  if (!shipment) throw new DomainError("Shipment not found.", 404);
+
+  if (can(principal.role, "shipment:transition")) {
+    const needed = STATUS_CAPABILITY[to];
+    if (needed && !can(principal.role, needed)) {
+      throw new DomainError(
+        to === "SUBMITTED_TO_CUSTOMS"
+          ? "Only a licensed customs broker can submit an entry."
+          : "Your account can't make that change.",
+        403,
+      );
+    }
+  } else {
+    const withdrawal = to === "CANCELLED" && OWNER_EDITABLE.includes(shipment.status);
+    if (!withdrawal || !canAccessResource(principal, shipment, "write")) {
+      throw new DomainError("You can't make that change to this shipment.", 403);
+    }
+  }
+
+  return transitionShipment({ shipmentId, to, actorId: principal.id, note: input.note });
+}
+
+/**
+ * The customer accepts a quote. Accepting, moving the shipment to
+ * AWAITING_PAYMENT and raising the invoice happen in one transaction: a customer
+ * never ends up with an accepted quote and no invoice, or an invoice for a quote
+ * that was never accepted.
+ *
+ * Only a quote a licensed broker has stood behind can be accepted. An estimate
+ * issued before classification was approved could change, and the customer
+ * would be paying against a number nobody has checked.
+ */
+export async function acceptQuote(input: { principal: Principal; quoteId: string }) {
+  const { principal, quoteId } = input;
+  const found = await db.quote.findUnique({ where: { id: quoteId }, select: { shipmentId: true } });
+  const shipment = found
+    ? await db.shipment.findFirst({
+        where: { AND: [shipmentScope(principal), { id: found.shipmentId }] },
+        include: { owner: { select: { id: true, email: true, phone: true } } },
+      })
+    : null;
+  if (!found || !shipment || !canAccessResource(principal, shipment, "write")) {
+    throw new DomainError("Quote not found.", 404);
+  }
+
+  const invoice = await db.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "Shipment" WHERE id = ${shipment.id} FOR UPDATE`;
+    const current = await tx.shipment.findUniqueOrThrow({ where: { id: shipment.id } });
+    const quote = await tx.quote.findUniqueOrThrow({ where: { id: quoteId } });
+
+    if (quote.status !== "ISSUED") throw new DomainError("That quote can no longer be accepted.", 409);
+    if (quote.expiresAt && quote.expiresAt < new Date()) {
+      throw new DomainError("That quote has expired. Ask us for a fresh one.", 409);
+    }
+    if (!quote.brokerApproved) {
+      throw new DomainError("A licensed broker hasn't reviewed this estimate yet, so it can't be accepted.", 409);
+    }
+    const verdict = canTransition(current.status, "AWAITING_PAYMENT", {
+      brokerApproved: true, invoiceSettled: false, hasRequiredDocuments: true,
+    });
+    if (current.status !== "QUOTE_READY" || !verdict.ok) {
+      throw new DomainError("This shipment isn't waiting on a quote.", 409);
+    }
+
+    await tx.quote.update({ where: { id: quoteId }, data: { status: "ACCEPTED" } });
+    await tx.shipment.update({ where: { id: shipment.id }, data: { status: "AWAITING_PAYMENT" } });
+    await tx.shipmentStatusHistory.create({
+      data: {
+        shipmentId: shipment.id, from: current.status, to: "AWAITING_PAYMENT",
+        actorId: principal.id, note: `Quote ${quote.reference} accepted`,
+      },
+    });
+    await recordAudit(
+      { actorId: principal.id, action: "quote.accepted", entityType: "Quote", entityId: quoteId, newValue: { reference: quote.reference } },
+      tx,
+    );
+    return invoiceQuote(tx, quoteId, principal.id);
+  });
+
+  await notifyOnStatus(shipment.owner, shipment.reference, "AWAITING_PAYMENT");
+  await refreshExceptions(shipment.id);
+  return invoice;
+}
+
+/**
+ * The public calculator: one line, list prices, no account. Always an estimate,
+ * and every charge from an unconfirmed rate comes back flagged.
+ */
+export async function quickEstimate(input: EstimateInput) {
+  assertSupportedCurrency(input.currency);
+  const hs = input.hsCode
+    ? await db.hsCode.findUnique({ where: { code: input.hsCode }, include: { permits: true } })
+    : null;
+
+  const [rateBook, pricingRules] = await Promise.all([loadRateBook(), loadPricingRules(null)]);
+  const customsValue = cents(money(input.goodsValue).plus(money(input.freightCost)).plus(money(input.insuranceCost)));
+  const brokerCharges = calculateBrokerCharges(
+    pricingRules.filter((r) => r.scope === "GLOBAL"),
+    {
+      customsValue: customsValue.toString(),
+      lineCount: 1,
+      importType: input.importType,
+      deliveryRequested: input.deliveryRequested,
+      rush: input.rush,
+    },
+  );
+  const result = calculateLandedCost(
+    {
+      goodsValue: input.goodsValue,
+      freightCost: input.freightCost,
+      insuranceCost: input.insuranceCost,
+      lines: [{
+        lineNumber: 1, description: "Goods", quantity: 1, lineValue: input.goodsValue,
+        hsCode: hs?.active ? hs.code : null,
+      }],
+    },
+    rateBook,
+    brokerCharges,
+  );
+
+  return {
+    ...result,
+    charges: summariseCharges(result.charges),
+    hsCode: hs ? { code: hs.code, description: hs.description } : null,
+    hsCodeRecognised: !input.hsCode || Boolean(hs?.active),
+    permits: (hs?.permits ?? []).map((p) => ({ agency: p.agency, permit: p.permit, notes: p.notes })),
+  };
 }

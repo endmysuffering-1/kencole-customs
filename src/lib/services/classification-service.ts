@@ -9,6 +9,7 @@ import {
   type Suggestion,
 } from "@/lib/domain/classification";
 import { DomainError } from "./errors";
+import { estimateShipment, refreshExceptions } from "./shipment-service";
 
 export async function suggestForItem(itemId: string): Promise<Suggestion[]> {
   const item = await db.shipmentItem.findUnique({
@@ -104,7 +105,7 @@ export async function decideClassification(input: {
   const status =
     input.decision === "EXCEPTION" ? "EXCEPTION" : ("BROKER_APPROVED" as const);
 
-  return db.$transaction(async (tx) => {
+  const updated = await db.$transaction(async (tx) => {
     const updated = await tx.shipmentItem.update({
       where: { id: input.itemId },
       data: {
@@ -133,4 +134,9 @@ export async function decideClassification(input: {
 
     return updated;
   });
+
+  // The line's tariff code decides its duty, so the estimate is stale now.
+  await estimateShipment(item.shipmentId);
+  await refreshExceptions(item.shipmentId);
+  return updated;
 }
