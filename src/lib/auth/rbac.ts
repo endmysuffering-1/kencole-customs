@@ -51,9 +51,14 @@ const EXTRA: Capability[] = [
   "pricing:edit", "plans:edit", "users:manage", "analytics:view", "audit:view",
   "rates:edit", "crm:manage", "delivery:manage", "delivery:read:assigned",
 ];
+
+/** Acts that need the broker's licence. Administering the system is not holding
+ *  it, so SUPER_ADMIN inherits everything else but not these. */
+const LICENSED: Capability[] = ["classification:approve", "declaration:submit"];
+
 CAPABILITIES.SUPER_ADMIN = [
   ...new Set([...Object.values(CAPABILITIES).flat(), ...EXTRA]),
-];
+].filter((c) => !LICENSED.includes(c));
 
 export function can(role: Role, capability: Capability): boolean {
   return CAPABILITIES[role].includes(capability);
