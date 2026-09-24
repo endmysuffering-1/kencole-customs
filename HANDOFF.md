@@ -1,8 +1,8 @@
 # Kencole Customs Brokerage — build handoff
 
 A B2B + B2C customs brokerage and import management platform for a licensed
-customs broker in The Bahamas. This package contains the schema and the domain
-layer. The UI, API routes and seed are not built yet.
+customs broker in The Bahamas. This package contains the schema, the domain and
+service layers, and a development seed. The UI and API routes are not built yet.
 
 ## What is here and working
 
@@ -34,19 +34,31 @@ adapter.
 **Auth and audit** — `src/lib/auth/` (scrypt passwords, hashed session tokens,
 capability + ownership checks) and `src/lib/audit.ts`.
 
-**Tests** — `tests/landed-cost.test.ts`, 15 passing. Run `npm test`.
+**Tests** — `tests/landed-cost.test.ts`, 18 passing. Run `npm test`.
 
-**Seed data** — `prisma/seed.ts`. Reuses the real domain engine and `rate-book.ts`
-loader (not the Next-coupled service layer) so every seeded number is produced by
-the same code the app runs, not hand-typed. Creates one of each `Role`, a
-business and a couple of consumers, all 8 HS codes the classifier's keyword rules
-know about with unconfirmed placeholder rate rules, and four shipments spanning
-the state machine — a fresh `DRAFT` with open exceptions, a quoted commercial
-order `AWAITING_PAYMENT`, a regulated personal import carried through to
-`DELIVERED`, and a commercial shipment sitting in `CUSTOMS_HOLD` with a support
-ticket. Refuses to run twice against a non-empty database — use `npm run
-db:reset` to start over. Every seeded account shares one password, printed at
-the end of the run (also in `DEV_PASSWORD` at the top of the file).
+**Seed data** — `prisma/seed.ts`. A development dataset: 22 users covering every
+`Role` (5 consumers, 5 businesses with an owner and an importer each, 7 staff),
+10 suppliers, and 30 shipments that between them sit in all 20 `ShipmentStatus`
+values, with the quotes, invoices, payments, documents, declarations, deliveries
+and exception flags each status implies. Every shared account password is
+`DEV_PASSWORD` at the top of the file, and printed at the end of the run.
+
+Shipments are one-line scenarios naming a target status. The seed replays the
+happy path up to it and checks every hop against `canTransition`, so it cannot
+produce a shipment the state machine would have refused. Figures come from the
+real engine (`calculateLandedCost`, `calculateBrokerCharges`, `loadRateBook`),
+suggestions from the app's own `KEYWORD_RULES`, references from the app's own
+allocator — nothing is hand-typed.
+
+It refuses to run with `NODE_ENV=production`, or against a non-local database
+unless `SEED_ALLOW_NON_LOCAL=1`, because the accounts it creates share a
+password that is in the repository. It also refuses a database that already has
+users; `npm run db:reset` wipes and reseeds.
+
+**Reference numbers** — `src/lib/services/references.ts`. Shipment, quote and
+invoice references come from `ReferenceCounter`, advanced atomically, so a number
+is never issued twice or re-issued after a delete. Years are taken in
+`America/Nassau` time.
 
 ## Two invariants the code is built around
 
@@ -54,7 +66,9 @@ the end of the run (also in `DEV_PASSWORD` at the top of the file).
    `ChargeType` + `RateRule` rows. `RateRule.confirmed` defaults to `false`, and
    any charge computed from an unconfirmed rule comes back in
    `result.unverifiedCharges` so the UI can mark it as unverified. Changing a
-   rate is a database operation.
+   rate is a database operation. So is deciding whether a charge is computed per
+   line or once per entry (`ChargeType.level`): the engine supports both and
+   takes no view on which a given Bahamian charge is.
 
 2. **Government money is never Kencole revenue.** Duty and VAT collected for the
    Public Treasury are a liability. `Invoice.governmentTotal` and
@@ -71,7 +85,12 @@ decide them. `readyForDeclaration()` gates `DECLARATION_PREPARED` and
 
 - All UI: public site, calculator, consumer dashboard, ops queues, broker review
 - API routes under `/api/v1/`
-- Remaining tests: pricing, RBAC/IDOR, state machine, revenue separation
+- Remaining tests: pricing, RBAC/IDOR, state machine, revenue separation, and
+  database-backed tests for reference allocation and the concurrency guards
+- A production path for loading reference data (charge types, rates, HS codes,
+  plans). Today only the seed creates it, and the seed will not run in production
+- Refunds. Cancelling a shipment voids invoices with nothing paid against them;
+  an invoice with money received is left alone for a refund flow to handle
 - Delivery driver interface, procurement module, CRM screens, analytics
 - README with install/deploy instructions
 
@@ -85,12 +104,12 @@ npm run db:seed
 npm test
 ```
 
+`npm run db:reset` drops the database, reapplies every migration and reseeds —
+`prisma migrate reset` runs the seed itself. Node 20.12 or later is required
+(the seed uses `process.loadEnvFile`).
+
 `prisma generate`, `migrate dev`, the seed script, `npm run typecheck` and
-`npm test` have all been run clean against this schema in a real Postgres
-database. The one type error that surfaced on the first `prisma generate` (an
-unannotated `StripeProvider.verifyWebhook` return type in
-`src/lib/providers/payments.ts` not matching the `PaymentProvider` interface)
-is fixed.
+`npm test` all run clean against this schema in a real Postgres database.
 
 ## Bahamas Customs items needing confirmation before production
 
@@ -101,7 +120,9 @@ and set `RateRule.confirmed = true` with a `sourceNote` citing the instrument:
 - Import duty rates per tariff heading
 - VAT rate and the exact base it applies to (whether duty and levies are included)
 - Environmental levy — scope, rates, and which headings attract it
-- Customs processing fee — percentage, minimum and maximum
+- Customs processing fee — percentage, minimum and maximum, and whether the
+  minimum and maximum apply per entry or per line (`ChargeType.level`; seeded as
+  `SHIPMENT`, which is also unconfirmed)
 - Excise and stamp duty, where applicable
 - Which headings require a permit, and from which agency
 - De minimis thresholds and personal exemption allowances

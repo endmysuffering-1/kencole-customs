@@ -2,6 +2,9 @@
   "name": "kencole-customs",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=20.12"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "prisma generate && next build",
@@ -11,11 +14,13 @@
     "db:migrate": "prisma migrate dev",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
-    "db:reset": "prisma migrate reset --force && npm run db:seed",
+    "db:reset": "prisma migrate reset --force",
     "test": "vitest run",
     "test:watch": "vitest"
   },
-  "prisma": { "seed": "tsx prisma/seed.ts" },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
   "dependencies": {
     "@prisma/client": "^6.2.1",
     "clsx": "^2.1.1",

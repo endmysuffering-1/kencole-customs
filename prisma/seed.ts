@@ -1,13 +1,6 @@
-import { existsSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import "./load-env";
 
-// `prisma migrate dev` / `prisma db seed` load .env themselves before running this
-// script, but a plain `tsx prisma/seed.ts` (npm run db:seed) does not — so load it
-// here too, resolved from this file's own location rather than the caller's cwd.
-const envPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", ".env");
-if (existsSync(envPath)) process.loadEnvFile(envPath);
-
+import type { Prisma } from "@prisma/client";
 import { hashPassword } from "@/lib/auth/password";
 import { cents, money } from "@/lib/money";
 import {
@@ -19,7 +12,7 @@ import {
   type RateBook,
 } from "@/lib/domain/landed-cost";
 import { calculateBrokerCharges, type PricingRuleSnapshot } from "@/lib/domain/pricing";
-import { rankSuggestions, suggestFromKeywords, type KeywordRule } from "@/lib/domain/classification";
+import { KEYWORD_RULES, rankSuggestions, suggestFromKeywords } from "@/lib/domain/classification";
 import { canTransition, type ShipmentStatus, type TransitionGuardContext } from "@/lib/domain/shipment-state";
 import { detectExceptions, type ExceptionInput } from "@/lib/domain/exceptions";
 import { loadPricingRules, loadRateBook } from "@/lib/services/rate-book";
@@ -27,6 +20,7 @@ import {
   nextInvoiceReference,
   nextQuoteReference,
   nextShipmentReference,
+  referenceYear,
 } from "@/lib/services/references";
 // The same client the app uses, so seeded references advance the same counters
 // the running application allocates from.
@@ -45,54 +39,71 @@ const PERMIT_PENDING_NOTE =
   "Placeholder agency/permit for local development — confirm the current permit regime " +
   "before production. See HANDOFF.md.";
 
+/** Development only: every seeded account shares it, and it is in the repository.
+ *  That is why the seed refuses to run anywhere but a local development database. */
 const DEV_PASSWORD = "KencoleDev#2026";
 
 const NOW = new Date();
 const daysAgo = (n: number) => new Date(NOW.getTime() - n * 24 * 60 * 60 * 1000);
 
+/**
+ * This seed creates a SUPER_ADMIN and 21 other accounts whose password is
+ * committed above. It must never reach a database anyone else can log in to, so
+ * it refuses production outright and a non-local database unless told otherwise.
+ */
+function assertDevelopmentDatabase() {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "Refusing to seed with NODE_ENV=production. This seed creates accounts whose shared " +
+      "password is committed to the repository.",
+    );
+  }
+  const url = process.env.DATABASE_URL;
+  if (!url) throw new Error("DATABASE_URL is not set.");
+  const host = new URL(url).hostname;
+  const local = ["localhost", "127.0.0.1", "::1", "[::1]"].includes(host);
+  if (!local && process.env.SEED_ALLOW_NON_LOCAL !== "1") {
+    throw new Error(
+      `Refusing to seed ${host}: it is not a local database. If it really is a disposable ` +
+      "development database (a Docker service, say), rerun with SEED_ALLOW_NON_LOCAL=1.",
+    );
+  }
+}
+
 // ─────────────────────────────── Reference data ──────────────────────────────
 
+/** Tariff-table wording for the HS codes the classifier knows. Keywords are not
+ *  kept here: suggestions come from KEYWORD_RULES, the same table the app uses. */
 interface HsCodeSeed {
   code: string;
   description: string;
-  keywords: string[];
-  alwaysReview?: boolean;
   regulated?: { agency: string; permit: string };
 }
 
 const HS_CODES: HsCodeSeed[] = [
-  { code: "8471.30.00", description: "Portable automatic data processing machines (laptops)", keywords: ["laptop", "notebook computer", "macbook", "tablet"] },
-  { code: "8517.13.00", description: "Smartphones", keywords: ["smartphone", "iphone", "mobile phone", "android phone"] },
-  { code: "6109.10.00", description: "T-shirts, singlets, cotton, knitted", keywords: ["t-shirt", "tee shirt", "cotton shirt", "work shirt"] },
-  { code: "9403.20.00", description: "Other metal furniture", keywords: ["shelving", "metal rack", "office furniture", "locker"] },
-  { code: "8708.99.00", description: "Other parts and accessories of motor vehicles", keywords: ["brake pad", "car part", "vehicle part", "alternator"] },
+  { code: "8471.30.00", description: "Portable automatic data processing machines (laptops)" },
+  { code: "8517.13.00", description: "Smartphones" },
+  { code: "6109.10.00", description: "T-shirts, singlets, cotton, knitted" },
+  { code: "9403.20.00", description: "Other metal furniture" },
+  { code: "8708.99.00", description: "Other parts and accessories of motor vehicles" },
   {
     code: "2208.40.00",
     description: "Rum and other spirits obtained by distilling fermented sugar-cane products",
-    keywords: ["rum", "spirits"],
-    alwaysReview: true,
     regulated: { agency: "Bahamas Customs & Excise", permit: "Liquor import permit" },
   },
   {
     code: "3004.90.00",
     description: "Medicaments, packaged for retail sale",
-    keywords: ["medicine", "pharmaceutical", "prescription", "medicament"],
-    alwaysReview: true,
     regulated: { agency: "Ministry of Health & Wellness", permit: "Pharmaceutical import permit" },
   },
   {
     code: "0303.00.00",
     description: "Fish, frozen",
-    keywords: ["frozen fish", "seafood", "shrimp"],
-    alwaysReview: true,
     regulated: { agency: "Department of Marine Resources", permit: "Fisheries import permit" },
   },
 ];
 
 const REGULATED_CODES = new Set(HS_CODES.filter((h) => h.regulated).map((h) => h.code));
-const KEYWORD_RULES: KeywordRule[] = HS_CODES.map((h) => ({
-  hsCode: h.code, description: h.description, keywords: h.keywords, alwaysReview: h.alwaysReview,
-}));
 
 const chapterOf = (code: string) => code.slice(0, 2);
 
@@ -327,12 +338,12 @@ async function issueQuote(input: {
   });
 }
 
-/** Mirrors issueInvoiceForQuote(). governmentTotal and brokerTotal are carried
- *  across as separate columns and never summed into one figure before storage. */
+/** Mirrors issueInvoiceForQuote(). governmentTotal and brokerTotal are stored as
+ *  separate columns; total is their sum, never a stand-in for either. */
 async function issueInvoice(input: {
   shipmentReference: string;
   shipmentId: string;
-  quote: { id: string; governmentTotal: unknown; brokerTotal: unknown };
+  quote: { id: string; governmentTotal: Prisma.Decimal; brokerTotal: Prisma.Decimal };
   estimateResult: LandedCostResult;
   billToEmail: string;
   businessId: string | null;
@@ -340,7 +351,7 @@ async function issueInvoice(input: {
 }) {
   const summary = summariseCharges(input.estimateResult.charges);
   const total = cents(
-    money(input.quote.governmentTotal as never).plus(money(input.quote.brokerTotal as never)),
+    money(input.quote.governmentTotal).plus(money(input.quote.brokerTotal)),
   ).toFixed(2);
 
   const invoice = await prisma.invoice.create({
@@ -411,6 +422,8 @@ function freightFor(mode: "AIR" | "SEA" | "COURIER", goodsValue: string) {
 // ─────────────────────────────── Seed ────────────────────────────────────────
 
 async function main() {
+  assertDevelopmentDatabase();
+
   const existing = await prisma.user.count();
   if (existing > 0) {
     console.log(`Database already has ${existing} user(s) — skipping seed.`);
@@ -526,7 +539,7 @@ async function main() {
 
   const chargeTypeIdByCode = new Map<string, string>();
   async function chargeType(input: {
-    code: string; label: string; payee: "GOVERNMENT" | "BROKER";
+    code: string; label: string; payee: "GOVERNMENT" | "BROKER"; level?: "LINE" | "SHIPMENT";
     basis: "PERCENT_OF_CUSTOMS_VALUE" | "PERCENT_OF_DUTIABLE_TOTAL" | "PERCENT_OF_GOODS_VALUE" | "FLAT" | "PER_LINE" | "PER_UNIT_WEIGHT";
     sortOrder: number; baseIncludes?: string[]; description: string;
     rules: { rate: string; hsCode?: string; chapter?: string; minAmount?: string; maxAmount?: string }[];
@@ -534,7 +547,7 @@ async function main() {
     const created = await prisma.chargeType.create({
       data: {
         code: input.code, label: input.label, payee: input.payee, basis: input.basis,
-        sortOrder: input.sortOrder, baseIncludes: input.baseIncludes ?? [], description: input.description,
+        level: input.level ?? "LINE", sortOrder: input.sortOrder, baseIncludes: input.baseIncludes ?? [], description: input.description,
         rateRules: {
           create: input.rules.map((r) => ({
             rate: r.rate,
@@ -571,9 +584,14 @@ async function main() {
     sortOrder: 20, description: "Environmental levy applied to the CIF customs value.",
     rules: [{ rate: "0.01" }],
   });
+  // TODO(customs): confirm how the processing fee is applied. Seeded per entry
+  // (level SHIPMENT), so the minimum and maximum bound the whole entry; as a LINE
+  // charge a ten-line entry would pay the minimum ten times and have a cap of ten
+  // times the maximum. Rate, minimum, maximum and level are all unverified.
   await chargeType({
     code: "CUSTOMS_PROCESSING_FEE", label: "Customs processing fee", payee: "GOVERNMENT",
-    basis: "PERCENT_OF_CUSTOMS_VALUE", sortOrder: 25, description: "Bahamas Customs entry processing fee.",
+    basis: "PERCENT_OF_CUSTOMS_VALUE", level: "SHIPMENT", sortOrder: 25,
+    description: "Bahamas Customs entry processing fee. Per-entry application is unconfirmed.",
     rules: [{ rate: "0.01", minAmount: "15.00", maxAmount: "300.00" }],
   });
   await chargeType({
@@ -642,7 +660,11 @@ async function main() {
   let entrySeq = 4800;
   const statusCounts = new Map<string, number>();
 
-  for (const spec of SHIPMENT_SPECS) {
+  // Oldest first, so references run in the same order as the shipments' dates —
+  // the numbering is meant to be sequential within the year.
+  const chronological = [...SHIPMENT_SPECS].sort((a, b) => b.createdDaysAgo - a.createdDaysAgo);
+
+  for (const spec of chronological) {
     const isBusiness = spec.party.kind === "business";
     const business = isBusiness ? businesses[spec.party.index]! : null;
     const consumer = !isBusiness ? consumers[spec.party.index]! : null;
@@ -689,35 +711,37 @@ async function main() {
       },
     );
 
-    const reference = await nextShipmentReference();
+    const reference = await nextShipmentReference("KCB", createdAt);
     const shipment = await prisma.shipment.create({
       data: {
         reference, ownerId, businessId: business?.id ?? null, importType, freightMode: spec.mode,
         supplierId: suppliers[spec.supplier]!.id, description: spec.description,
         goodsValue, freightCost, insuranceCost,
-        status: "DRAFT", estimateJson: result as never, estimatedAt: createdAt,
+        status: "DRAFT", estimateJson: result as unknown as Prisma.InputJsonValue, estimatedAt: createdAt,
         createdAt, updatedAt: createdAt,
         items: {
           create: lines.map((l) => {
+            // The app's own keyword table, so every seeded suggestion is one the
+            // classifier would really make. Lines it has no rule for get none.
             const suggestion = rankSuggestions([suggestFromKeywords(l.description, KEYWORD_RULES)])[0];
+            const suggested = suggestion
+              ? { suggestedHsCode: suggestion.hsCode, confidence: suggestion.confidence.toFixed(3) }
+              : {};
             const base = {
               lineNumber: l.lineNumber, description: l.description, quantity: l.quantity,
               unitValue: l.unitValue, lineValue: l.lineValue,
             };
             if (spec.classification === "unclassified") return base;
             if (spec.classification === "needs_review") {
-              return {
-                ...base,
-                suggestedHsCode: suggestion?.hsCode ?? l.hsCode,
-                confidence: (suggestion?.confidence ?? 0.57).toFixed(3),
-                classificationStatus: "NEEDS_REVIEW" as const,
-              };
+              if (!suggestion) {
+                throw new Error(`Scenario "${spec.description}": "${l.description}" matches no keyword rule, so it cannot be NEEDS_REVIEW.`);
+              }
+              return { ...base, ...suggested, classificationStatus: "NEEDS_REVIEW" as const };
             }
             return {
               ...base,
+              ...suggested,
               hsCodeId: hsCodeIdByCode.get(l.hsCode)!,
-              suggestedHsCode: suggestion?.hsCode ?? l.hsCode,
-              confidence: (suggestion?.confidence ?? 0.57).toFixed(3),
               classificationStatus: "BROKER_APPROVED" as const,
               brokerNote: REGULATED_CODES.has(l.hsCode)
                 ? "Regulated line — permit sighted before approval."
@@ -745,8 +769,10 @@ async function main() {
     const reachesPaid = path.includes("PAID");
     let current: ShipmentStatus = "DRAFT";
     let settled = false;
-    let quote: { id: string; governmentTotal: unknown; brokerTotal: unknown } | null = null;
+    let quote: { id: string; governmentTotal: Prisma.Decimal; brokerTotal: Prisma.Decimal } | null = null;
     let invoiceRecord: { id: string; total: string } | null = null;
+    // Whoever is assigned the delivery is who the history says drove it.
+    const driver = drivers[spec.createdDaysAgo % drivers.length]!;
 
     for (const [i, to] of path.entries()) {
       const at = times[i]!;
@@ -756,7 +782,7 @@ async function main() {
         settled = true;
       }
       const actorId =
-        to === "OUT_FOR_DELIVERY" || to === "DELIVERED" ? driverUser.id
+        to === "OUT_FOR_DELIVERY" || to === "DELIVERED" ? driver.userId
         : to === "DECLARATION_PREPARED" || to === "SUBMITTED_TO_CUSTOMS" || to === "QUOTE_READY" ? broker.id
         : ops.id;
 
@@ -784,6 +810,12 @@ async function main() {
       }
     }
 
+    // Mirrors transitionShipment(): cancelling voids an invoice nothing has been
+    // paid against, so it stops counting as revenue or as money owed.
+    if (current === "CANCELLED" && invoiceRecord && !settled) {
+      await prisma.invoice.update({ where: { id: invoiceRecord.id }, data: { status: "VOIDED" } });
+    }
+
     if (path.includes("DECLARATION_PREPARED")) {
       entrySeq += 1;
       const declStatus =
@@ -796,13 +828,14 @@ async function main() {
       await prisma.customsDeclaration.create({
         data: {
           shipmentId: shipment.id, status: declStatus,
-          entryNumber: `C2C-2026-${String(entrySeq).padStart(6, "0")}`, regimeCode: "IM4",
+          entryNumber: `C2C-${referenceYear(submittedIdx >= 0 ? times[submittedIdx]! : createdAt)}-${String(entrySeq).padStart(6, "0")}`,
+          regimeCode: "IM4",
           submittedAt: submittedIdx >= 0 ? times[submittedIdx]! : null,
           submittedBy: submittedIdx >= 0 ? broker.id : null,
           assessedTotal: declStatus === "ASSESSED" || declStatus === "RELEASED" ? result.governmentTotal : null,
           releasedAt: declStatus === "RELEASED" ? times[path.indexOf("CUSTOMS_RELEASED")]! : null,
           adapter: "manual",
-          payloadJson: { reference, lines: lines.length, declarant: broker.id } as never,
+          payloadJson: { reference, lines: lines.length, declarant: broker.id },
         },
       });
     }
@@ -811,7 +844,6 @@ async function main() {
       const readyAt = times[path.indexOf("READY_FOR_DELIVERY")]!;
       const deliveredIdx = path.indexOf("DELIVERED");
       const deliveryFee = summariseCharges(result.charges).find((ch) => ch.chargeCode === "DELIVERY")?.amount ?? "25.00";
-      const driver = drivers[spec.createdDaysAgo % drivers.length]!;
       await prisma.delivery.create({
         data: {
           shipmentId: shipment.id,
@@ -833,7 +865,9 @@ async function main() {
         lineNumber: l.lineNumber,
         hsCode: approved ? l.hsCode : null,
         lineValue: l.lineValue,
-        regulated: REGULATED_CODES.has(l.hsCode),
+        // refreshExceptions() reads permits off the line's approved HS code, and an
+        // unapproved line has none — so only an approved line can need a permit yet.
+        regulated: approved && REGULATED_CODES.has(l.hsCode),
       })),
       status: current,
       statusChangedAt: times[times.length - 1] ?? createdAt,
@@ -856,7 +890,10 @@ async function main() {
   }
 
   // ── Support, CRM and procurement ──
-  const heldShipment = await prisma.shipment.findFirstOrThrow({ where: { status: "CUSTOMS_HOLD" } });
+  const heldShipment = await prisma.shipment.findFirstOrThrow({
+    where: { status: "CUSTOMS_HOLD" },
+    orderBy: { reference: "asc" },
+  });
   const ticket = await prisma.supportTicket.create({
     data: {
       reference: `TCK-${heldShipment.reference}`, userId: heldShipment.ownerId, shipmentId: heldShipment.id,
@@ -891,7 +928,7 @@ async function main() {
 
   const procurement = await prisma.procurementRequest.create({
     data: {
-      reference: "PR-2026-0001", businessId: businesses[0]!.id, requestedBy: businesses[0]!.userId,
+      reference: `PR-${referenceYear(daysAgo(5))}-0001`, businessId: businesses[0]!.id, requestedBy: businesses[0]!.userId,
       productUrl: "https://example-supplier.test/product/marine-cleats-8in",
       description: "Stainless steel marine cleats, 8-inch, bulk order", quantity: 200,
       specifications: "316-grade stainless steel, bulk packed", targetBudget: "3200.00",
