@@ -12,7 +12,7 @@ import { SESSION_COOKIE } from "@/lib/auth/cookie";
  *    renders, instead of flashing an empty dashboard.
  */
 
-const PRIVATE_PAGES = ["/dashboard", "/shipments", "/ops", "/broker"];
+const PRIVATE_PAGES = ["/dashboard", "/shipments", "/ops", "/broker", "/admin"];
 const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 function sameOrigin(req: NextRequest): boolean {

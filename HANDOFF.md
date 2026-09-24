@@ -38,7 +38,7 @@ adapter.
 **Auth and audit** — `src/lib/auth/` (scrypt passwords, hashed session tokens,
 capability + ownership checks) and `src/lib/audit.ts`.
 
-**Tests** — 150 passing. Run `npm test`. Pure suites cover landed cost, pricing
+**Tests** — 174 passing. Run `npm test`. Pure suites cover landed cost, pricing
 scope (BUSINESS > PLAN > GLOBAL), RBAC and cross-tenant access, and the state
 machine. Integration suites in `tests/integration/` run the real services
 against Postgres: revenue separation, audit reasons (classification and rate
@@ -90,6 +90,8 @@ notes and internal status names. Each quoted government charge carries
 | `POST documents/upload` · `GET documents/:id` | owner or staff (multipart; type checked against the bytes) |
 | `POST classification/suggestions` · `POST classification/decisions` | `classification:suggest` · `classification:approve` |
 | `GET, POST invoices` · `GET invoices/:id` · `GET invoices/:id/payment-instructions` · `POST invoices/:id/payments` | scoped · `invoice:issue` · owner · `payment:record` |
+| `GET rates` · `POST rates` · `POST rates/:id/supersede` | `rates:read` · `rates:edit` (rates as stored: 0.35 for 35%) |
+| `GET users` · `POST users/:id/role` · `POST users/:id/access` | `users:manage`, reason required on every change |
 
 Accepting a quote, moving the shipment to `AWAITING_PAYMENT` and raising the
 invoice happen in one transaction. A payment that settles an invoice moves the
@@ -113,6 +115,8 @@ a page outside the user's role is 404.
 | `/dashboard`, `/shipments/new`, `/shipments/:id` | customers | Open a shipment, upload the invoice, see the estimate, accept a broker-reviewed quote, get bank-transfer instructions, follow the timeline |
 | `/ops`, `/ops/shipments/:id` | operations, broker | Work queues by stage with time in status against `STALE_HOURS`, open exceptions by severity, unpaid invoices; status moves, suggestions, quoting and payment recording |
 | `/broker`, `/broker/review/:id` | broker only | Lines to classify and entries to submit; the document on the left, lines on the right, approve / modify / raise exception |
+| `/admin/rates` | operations and broker read; broker and administrator change | The government rate table: in force, scheduled and superseded, with how many are still unverified. Change a rate from a date, or add one for a heading or chapter |
+| `/admin/users` | administrator only | Every account, searchable by name, email, role and status. Change a role or deactivate / restore an account |
 
 The rules the screens keep:
 
@@ -124,6 +128,15 @@ The rules the screens keep:
 - On the broker screen, approving the code on the table needs no reason.
   Approving a different code is sent as a modification, and a modification or an
   exception needs a reason; the service enforces the same rule.
+- A rate is never edited. Changing one closes the current rule and opens its
+  successor, from now or from a date (midnight in Nassau), and needs a reason.
+  Marking a rate confirmed needs a citation. Adding a rule over goods a live rule
+  already covers is refused; change that rule instead. Kencole's own fees are
+  pricing rules and are not on this screen.
+- Deactivating an account ends all its sessions at once. Nobody can change their
+  own role or access, and only an administrator can change another
+  administrator's. Granting the broker role shows a warning that it carries the
+  licensed capabilities.
 - Ochre and teal appear only on money: badges, links and focus rings are ink.
 - The operations queues are defined in `OPS_QUEUES`
   (`src/lib/services/ops-queries.ts`). HANDOFF named "ops queues" without
@@ -153,8 +166,13 @@ not even `SUPER_ADMIN`, since administering the system is not holding the licenc
 
 ## Not built yet
 
-- Staff screens for rates, pricing rules, plans, users and the audit log (the
-  services exist: `rate-service.ts`, `user-service.ts`)
+- Staff screens for pricing rules (Kencole's fees), plans and a full audit log
+  viewer. Rate and access changes show their own recent history
+- Ending a heading or chapter rate without replacing it. Today it can only be
+  superseded; ending one would let those goods fall back to the chapter or
+  general rate, which needs its own reason-and-audit path
+- Inviting staff. Staff accounts come from the seed; an administrator can change
+  an existing account's role but not create one
 - Resolving an exception by hand. Flags are recomputed on every change; there is
   no "dismiss with a reason" action yet
 - A production path for loading reference data (charge types, rates, HS codes,
@@ -175,9 +193,10 @@ npm test
 npm run dev                   # http://localhost:3000
 ```
 
-Seeded sign-ins (password `DEV_PASSWORD` in `prisma/seed.ts`): `broker@kencole.bs`
-(licensed broker), `ops@kencole.bs` (operations), `simone.pinder@example.com`
-(a consumer with shipments at several stages).
+Seeded sign-ins (password `DEV_PASSWORD` in `prisma/seed.ts`): `admin@kencole.bs`
+(administrator), `broker@kencole.bs` (licensed broker), `ops@kencole.bs`
+(operations), `simone.pinder@example.com` (a consumer with shipments at several
+stages).
 
 `npm run db:reset` drops the database, reapplies every migration and reseeds —
 `prisma migrate reset` runs the seed itself. Node 20.12 or later is required

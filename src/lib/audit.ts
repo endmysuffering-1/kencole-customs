@@ -12,11 +12,11 @@ import { clientMeta } from "@/lib/auth/session";
 
 export type AuditAction =
   | "user.login" | "user.login_failed" | "user.logout" | "user.registered"
-  | "user.role_changed" | "user.permissions_changed"
+  | "user.role_changed" | "user.permissions_changed" | "user.deactivated" | "user.reactivated"
   | "shipment.created" | "shipment.updated" | "shipment.value_changed"
   | "shipment.status_changed" | "shipment.deleted"
   | "classification.suggested" | "classification.changed" | "classification.approved"
-  | "rate.changed" | "pricing.changed" | "plan.changed"
+  | "rate.changed" | "rate.created" | "pricing.changed" | "plan.changed"
   | "quote.issued" | "quote.accepted" | "invoice.issued" | "invoice.voided" | "payment.recorded" | "payment.refunded"
   | "document.uploaded" | "document.deleted"
   | "declaration.prepared" | "declaration.submitted" | "declaration.reference_changed"
@@ -35,8 +35,9 @@ export interface AuditEntry {
 
 /** Actions where "because I said so" is not good enough. */
 const REASON_REQUIRED: AuditAction[] = [
-  "classification.changed", "shipment.value_changed", "rate.changed",
+  "classification.changed", "shipment.value_changed", "rate.changed", "rate.created",
   "payment.refunded", "invoice.voided", "declaration.reference_changed", "user.role_changed",
+  "user.deactivated", "user.reactivated",
 ];
 
 export function requireReason(action: AuditAction): boolean {

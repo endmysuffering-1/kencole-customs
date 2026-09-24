@@ -30,7 +30,7 @@ export default async function OpsPage() {
       </dl>
 
       <div className="mt-8 grid gap-6 xl:grid-cols-[1fr_24rem]">
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6">
           {board.queues.map((q) => (
             <Card key={q.key} id={q.key}>
               <CardHeader
@@ -46,7 +46,7 @@ export default async function OpsPage() {
           ))}
         </div>
 
-        <aside className="space-y-6">
+        <aside className="min-w-0 space-y-6">
           <Card>
             <CardHeader title="Open exceptions" eyebrow="Most serious first" />
             {board.exceptions.length === 0 ? (

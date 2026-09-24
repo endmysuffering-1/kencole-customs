@@ -64,7 +64,7 @@ export default async function ShipmentPage({ params }: { params: Promise<{ id: s
       </Card>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_24rem]">
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6">
           <NextStep
             status={s.status}
             shipmentId={s.id}
@@ -145,7 +145,7 @@ export default async function ShipmentPage({ params }: { params: Promise<{ id: s
           </Card>
         </div>
 
-        <aside className="space-y-6">
+        <aside className="min-w-0 space-y-6">
           <Card>
             {quote ? (
               <>

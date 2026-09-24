@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { TRANSITIONS, type ShipmentStatus } from "@/lib/domain/shipment-state";
+import { nassauMidnight } from "@/lib/domain/rates";
 
 const decimalString = z
   .union([z.string(), z.number()])
@@ -151,3 +152,61 @@ export const paymentSchema = z.object({
 });
 
 export const suggestSchema = z.object({ itemId: z.string().cuid() });
+
+// ─── Staff administration ─────────────────────────────────────────────────────
+
+const optionalAmount = z.string().trim().max(20).optional().nullable()
+  .transform((v) => (v ? v : null));
+
+/** A calendar date, taken as midnight in Nassau. Omitted means now. */
+const effectiveDate = z.string().trim().optional().or(z.literal(""))
+  .transform((v, ctx) => {
+    if (!v) return undefined;
+    try {
+      return nassauMidnight(v);
+    } catch (e) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: e instanceof Error ? e.message : "Enter a valid date." });
+      return z.NEVER;
+    }
+  });
+
+const rateFields = {
+  /** As stored: a fraction for percentage bases (0.35 for 35%), dollars otherwise. */
+  rate: z.string().trim().min(1, "Enter a rate.").max(20),
+  minAmount: optionalAmount,
+  maxAmount: optionalAmount,
+  confirmed: z.boolean().default(false),
+  sourceNote: z.string().trim().max(500).optional().nullable(),
+  reason: z.string().trim().min(1, "Say why this rate is changing.").max(1000),
+  effectiveFrom: effectiveDate,
+};
+
+export const rateSupersedeSchema = z.object(rateFields);
+
+export const rateCreateSchema = z.object({
+  ...rateFields,
+  chargeTypeId: z.string().cuid(),
+  hsCode: z.string().trim().max(20).optional().nullable(),
+  chapter: z.string().trim().max(2).optional().nullable(),
+});
+
+const roleSchema = z.enum([
+  "CONSUMER", "BUSINESS_USER", "BUSINESS_ADMIN", "CUSTOMS_BROKER", "OPERATIONS", "DRIVER", "SUPER_ADMIN",
+]);
+
+export const userRoleSchema = z.object({
+  role: roleSchema,
+  reason: z.string().trim().min(1, "Give a reason for changing someone's role.").max(1000),
+});
+
+export const userAccessSchema = z.object({
+  active: z.boolean(),
+  reason: z.string().trim().min(1, "Give a reason for changing this account's access.").max(1000),
+});
+
+export const listUsersQuery = z.object({
+  q: z.string().trim().max(100).optional(),
+  role: roleSchema.optional(),
+  status: z.enum(["active", "inactive"]).optional(),
+  cursor: z.string().max(40).optional(),
+});

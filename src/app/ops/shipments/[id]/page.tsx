@@ -74,7 +74,7 @@ export default async function OpsShipmentPage({ params }: { params: Promise<{ id
       </header>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_26rem]">
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6">
           <Card>
             <CardHeader title="Move it on" eyebrow={`Currently ${label(status)}`} />
             <div className="p-5">
@@ -185,7 +185,7 @@ export default async function OpsShipmentPage({ params }: { params: Promise<{ id
           </Card>
         </div>
 
-        <aside className="space-y-6">
+        <aside className="min-w-0 space-y-6">
           <Card>
             {liveQuote ? (
               <>

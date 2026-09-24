@@ -45,7 +45,7 @@ function Queue({ rows, empty }: { rows: Jsonify<BoardCard>[]; empty: string }) {
               <span className="num font-semibold">{s.reference}</span>
               <span className="ml-2 text-sm text-ink-500">{s.customer} · {s.description ?? "—"}</span>
             </span>
-            <span className="flex items-center gap-3 text-sm">
+            <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
               {s.worstSeverity && <SeverityBadge severity={s.worstSeverity} />}
               <span className="text-ink-500">{s.statusLabel}</span>
               <span className="num">{s.approvedLines}/{s.lines} lines</span>
