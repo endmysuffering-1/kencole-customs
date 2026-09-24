@@ -2,9 +2,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { cookies, headers } from "next/headers";
 import { cache } from "react";
 import { db } from "@/lib/db";
+import { SESSION_COOKIE as COOKIE } from "./cookie";
 import { can, canAccessResource, type Capability, type OwnedResource, type Principal, type Role } from "./rbac";
-
-const COOKIE = "kencole_session";
 const TTL_MS = 1000 * 60 * 60 * 12;
 
 /** The cookie holds a random token; the database holds only its hash. A leaked
