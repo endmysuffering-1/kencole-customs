@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    @apply bg-paper text-ink;
+  }
+  :focus-visible {
+    @apply outline outline-2 outline-offset-2 outline-ink;
+  }
+}
+
+@layer utilities {
+  /* Every money column: digits line up, so amounts can be compared down a column. */
+  .num {
+    font-variant-numeric: tabular-nums lining-nums;
+    font-feature-settings: "tnum" 1, "lnum" 1;
+  }
+}

@@ -102,5 +102,10 @@ export async function readDocument(principal: Principal, documentId: string) {
     where: { id: documentId, deletedAt: null, shipment: shipmentScope(principal) },
   });
   if (!document) throw new DomainError("Document not found.", 404);
-  return { document, body: await storage.get(document.storageKey) };
+  const body = await storage.get(document.storageKey).catch((e: NodeJS.ErrnoException) => {
+    // The record outlived its file. Say so, rather than failing as a server error.
+    if (e.code === "ENOENT") throw new DomainError("The file for this document is missing from storage.", 404);
+    throw e;
+  });
+  return { document, body };
 }

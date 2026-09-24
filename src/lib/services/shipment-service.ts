@@ -596,7 +596,7 @@ export async function updateShipment(input: { principal: Principal; shipmentId: 
 }
 
 /** Status changes that need more than shipment:transition. */
-const STATUS_CAPABILITY: Partial<Record<ShipmentStatus, Capability>> = {
+export const STATUS_CAPABILITY: Partial<Record<ShipmentStatus, Capability>> = {
   DECLARATION_PREPARED: "declaration:prepare",
   SUBMITTED_TO_CUSTOMS: "declaration:submit",
 };

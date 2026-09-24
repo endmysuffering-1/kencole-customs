@@ -38,7 +38,7 @@ adapter.
 **Auth and audit** — `src/lib/auth/` (scrypt passwords, hashed session tokens,
 capability + ownership checks) and `src/lib/audit.ts`.
 
-**Tests** — 116 passing. Run `npm test`. Pure suites cover landed cost, pricing
+**Tests** — 150 passing. Run `npm test`. Pure suites cover landed cost, pricing
 scope (BUSINESS > PLAN > GLOBAL), RBAC and cross-tenant access, and the state
 machine. Integration suites in `tests/integration/` run the real services
 against Postgres: revenue separation, audit reasons (classification and rate
@@ -55,7 +55,9 @@ and refuses any database whose name does not end in `_test` or that is not local
 `Role` (5 consumers, 5 businesses with an owner and an importer each, 7 staff),
 10 suppliers, and 30 shipments that between them sit in all 20 `ShipmentStatus`
 values, with the quotes, invoices, payments, documents, declarations, deliveries
-and exception flags each status implies. Every shared account password is
+and exception flags each status implies. Each seeded commercial invoice is a
+small one-page PDF written to storage and stamped as sample data, so the broker
+review screen has something to show. Every shared account password is
 `DEV_PASSWORD` at the top of the file, and printed at the end of the run.
 
 Shipments are one-line scenarios naming a target status. The seed replays the
@@ -99,6 +101,34 @@ invoice references come from `ReferenceCounter`, advanced atomically, so a numbe
 is never issued twice or re-issued after a delete. Years are taken in
 `America/Nassau` time.
 
+**UI** — `src/app/`. Server components call the services directly through the
+same scopes as the API; client components post to `/api/v1`. Every private page
+starts with `pageUser()` (`src/lib/auth/page.ts`): signed out goes to sign in, and
+a page outside the user's role is 404.
+
+| Page | Who | What |
+| --- | --- | --- |
+| `/` | public | The landed-cost calculator, pricing live from the rate table, with a tariff search and permit warnings |
+| `/login`, `/register` | public | Personal or business accounts |
+| `/dashboard`, `/shipments/new`, `/shipments/:id` | customers | Open a shipment, upload the invoice, see the estimate, accept a broker-reviewed quote, get bank-transfer instructions, follow the timeline |
+| `/ops`, `/ops/shipments/:id` | operations, broker | Work queues by stage with time in status against `STALE_HOURS`, open exceptions by severity, unpaid invoices; status moves, suggestions, quoting and payment recording |
+| `/broker`, `/broker/review/:id` | broker only | Lines to classify and entries to submit; the document on the left, lines on the right, approve / modify / raise exception |
+
+The rules the screens keep:
+
+- A customer only ever sees `CUSTOMER_LABEL` and `CUSTOMER_MILESTONES` wording,
+  and sees a tariff code only once a broker has approved it.
+- `ChargeBreakdown` is the one place charges are drawn. Government charges and
+  Kencole's fees are separate blocks with separate subtotals, and every charge
+  from an unconfirmed rate carries an "Unverified rate" mark and a footnote.
+- On the broker screen, approving the code on the table needs no reason.
+  Approving a different code is sent as a modification, and a modification or an
+  exception needs a reason; the service enforces the same rule.
+- Ochre and teal appear only on money: badges, links and focus rings are ink.
+- The operations queues are defined in `OPS_QUEUES`
+  (`src/lib/services/ops-queries.ts`). HANDOFF named "ops queues" without
+  listing them; the grouping by stage is a first cut to adjust with the team.
+
 ## Two invariants the code is built around
 
 1. **No regulatory rate is hardcoded.** Every duty, VAT and levy rate lives in
@@ -123,7 +153,10 @@ not even `SUPER_ADMIN`, since administering the system is not holding the licenc
 
 ## Not built yet
 
-- All UI: public site, calculator, consumer dashboard, ops queues, broker review
+- Staff screens for rates, pricing rules, plans, users and the audit log (the
+  services exist: `rate-service.ts`, `user-service.ts`)
+- Resolving an exception by hand. Flags are recomputed on every change; there is
+  no "dismiss with a reason" action yet
 - A production path for loading reference data (charge types, rates, HS codes,
   plans). Today only the seed creates it, and the seed will not run in production
 - Refunds. Cancelling a shipment voids invoices with nothing paid against them;
@@ -139,14 +172,21 @@ cp .env.example .env          # set DATABASE_URL and SESSION_SECRET
 npx prisma migrate dev --name init
 npm run db:seed
 npm test
+npm run dev                   # http://localhost:3000
 ```
+
+Seeded sign-ins (password `DEV_PASSWORD` in `prisma/seed.ts`): `broker@kencole.bs`
+(licensed broker), `ops@kencole.bs` (operations), `simone.pinder@example.com`
+(a consumer with shipments at several stages).
 
 `npm run db:reset` drops the database, reapplies every migration and reseeds —
 `prisma migrate reset` runs the seed itself. Node 20.12 or later is required
 (the seed uses `process.loadEnvFile`).
 
-`prisma generate`, `migrate dev`, the seed script, `npm run typecheck` and
-`npm test` all run clean against this schema in a real Postgres database.
+`prisma generate`, `migrate dev`, the seed script, `npm run typecheck`,
+`npm test` and `npm run build` all run clean against this schema in a real
+Postgres database. The screens were checked in Chromium against the seeded
+data, including one customer taken from sign-up to paid entirely through the UI.
 
 ## Bahamas Customs items needing confirmation before production
 

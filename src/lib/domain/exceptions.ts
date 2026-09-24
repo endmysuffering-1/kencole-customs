@@ -32,7 +32,7 @@ export interface ExceptionFlag {
 }
 
 /** Hours a shipment may sit in a queue before it is considered stuck. */
-const STALE_HOURS: Partial<Record<ShipmentStatus, number>> = {
+export const STALE_HOURS: Partial<Record<ShipmentStatus, number>> = {
   DOCUMENTS_REQUIRED: 72,
   CLASSIFICATION_REVIEW: 24,
   AWAITING_PAYMENT: 120,

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { db } from "@/lib/db";
 import { recordPaymentAndAdvance } from "@/lib/services/billing-flow";
 import { readDocument, uploadDocument } from "@/lib/services/document-service";
+import { storage } from "@/lib/providers/storage";
 import { getInvoice, getShipment, listInvoices, listShipments } from "@/lib/services/shipment-queries";
 import {
   acceptQuote,
@@ -251,6 +252,17 @@ describe("documents", () => {
       file: { name: "invoice.pdf", type: "application/pdf", body: Buffer.from("<html><script>alert(1)</script>") },
     })).rejects.toThrow(/do not match/);
     expect(await db.shipmentDocument.count()).toBe(0);
+  });
+
+  it("answers 404, not a server error, when a document's file has gone from storage", async () => {
+    const { p } = await world();
+    const s = await openShipment({ principal: p.consumerA, data: shipmentInput() });
+    const doc = await uploadDocument({
+      principal: p.consumerA, shipmentId: s.id, kind: "OTHER",
+      file: { name: "x.pdf", type: "application/pdf", body: PDF },
+    });
+    await storage.remove(doc.storageKey);
+    await expect(readDocument(p.consumerA, doc.id)).rejects.toMatchObject({ status: 404, message: /missing from storage/ });
   });
 
   it("will not attach a document to someone else's shipment", async () => {

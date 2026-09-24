@@ -25,6 +25,8 @@ import {
 // The same client the app uses, so seeded references advance the same counters
 // the running application allocates from.
 import { db as prisma } from "@/lib/db";
+import { storage } from "@/lib/providers/storage";
+import { sampleInvoicePdf } from "./sample-invoice";
 
 /**
  * Every RateRule below is illustrative dev data, not a Bahamian tariff rate.
@@ -755,11 +757,17 @@ async function main() {
 
     const hasDocuments = path.includes("DOCUMENTS_RECEIVED");
     if (hasDocuments) {
+      const fileName = `${reference.toLowerCase()}-invoice.pdf`;
+      const stored = await storage.put({
+        body: sampleInvoicePdf({ reference, supplier: suppliers[spec.supplier]!.name, date: createdAt, lines, goodsValue }),
+        contentType: "application/pdf",
+        fileName,
+        prefix: `shipments/${shipment.id}`,
+      });
       await prisma.shipmentDocument.create({
         data: {
-          shipmentId: shipment.id, kind: "COMMERCIAL_INVOICE",
-          fileName: `${reference.toLowerCase()}-invoice.pdf`, mimeType: "application/pdf",
-          sizeBytes: 90_000 + lines.length * 12_000, storageKey: `shipments/${shipment.id}/commercial-invoice.pdf`,
+          shipmentId: shipment.id, kind: "COMMERCIAL_INVOICE", fileName, mimeType: "application/pdf",
+          sizeBytes: stored.sizeBytes, storageKey: stored.key, checksum: stored.checksum,
           scanStatus: "CLEAN", uploadedBy: ownerId, createdAt,
         },
       });
