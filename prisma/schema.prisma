@@ -1,0 +1,906 @@
+// Kencole Customs Brokerage — data model
+// Money is stored as Decimal(14,2) in BSD. Rates are Decimal(9,6) fractions (0.10 = 10%).
+// Nothing regulatory is hardcoded: every duty/tax/levy rate lives in ChargeType + RateRule.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────── Identity & access ───────────────────────────
+
+enum Role {
+  CONSUMER
+  BUSINESS_USER
+  BUSINESS_ADMIN
+  CUSTOMS_BROKER
+  OPERATIONS
+  DRIVER
+  SUPER_ADMIN
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  fullName     String
+  phone        String?
+  role         Role     @default(CONSUMER)
+  emailVerified DateTime?
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  deletedAt    DateTime?
+
+  sessions        Session[]
+  consumerProfile ConsumerProfile?
+  memberships     BusinessMember[]
+  shipments       Shipment[]        @relation("ShipmentOwner")
+  auditLogs       AuditLog[]
+  driver          Driver?
+  tickets         SupportTicket[]
+  messages        SupportMessage[]
+
+  @@index([role])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model ConsumerProfile {
+  id            String   @id @default(cuid())
+  userId        String   @unique
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  nib           String? // National Insurance / TIN for importer identification
+  addressId     String?
+  address       Address? @relation(fields: [addressId], references: [id])
+  membershipId  String?
+  membership    Subscription? @relation(fields: [membershipId], references: [id])
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model Business {
+  id                String   @id @default(cuid())
+  legalName         String
+  tradingName       String?
+  tin               String?
+  importerNumber    String? // Bahamas Customs importer reference
+  industry          String?
+  billingEmail      String?
+  accountManagerId  String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  deletedAt         DateTime?
+
+  members        BusinessMember[]
+  addresses      Address[]
+  suppliers      Supplier[]
+  products       Product[]
+  shipments      Shipment[]
+  invoices       Invoice[]
+  subscriptionId String?
+  subscription   Subscription?         @relation(fields: [subscriptionId], references: [id])
+  procurement    ProcurementRequest[]
+  pricingRules   PricingRule[]
+
+  @@index([legalName])
+}
+
+model BusinessMember {
+  id         String   @id @default(cuid())
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  isAdmin    Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  @@unique([businessId, userId])
+  @@index([userId])
+}
+
+model Address {
+  id         String   @id @default(cuid())
+  label      String?
+  line1      String
+  line2      String?
+  settlement String // e.g. "Nassau", "Freeport"
+  island     String // e.g. "New Providence"
+  country    String   @default("BS")
+  contact    String?
+  phone      String?
+  businessId String?
+  business   Business? @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+
+  consumers  ConsumerProfile[]
+  deliveries Delivery[]
+}
+
+// ─────────────────────────────── Trade reference data ────────────────────────
+
+model Supplier {
+  id         String   @id @default(cuid())
+  name       String
+  country    String
+  website    String?
+  businessId String?
+  business   Business? @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+
+  shipments Shipment[]
+
+  @@index([name])
+}
+
+model Product {
+  id          String   @id @default(cuid())
+  businessId  String
+  business    Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  sku         String?
+  description String
+  hsCodeId    String?
+  hsCode      HsCode?  @relation(fields: [hsCodeId], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([businessId])
+}
+
+model HsCode {
+  id          String   @id @default(cuid())
+  code        String   @unique // tariff heading, e.g. "8517.13.00"
+  description String
+  chapter     String
+  active      Boolean  @default(true)
+  notes       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  rateRules   RateRule[]
+  permits     PermitRequirement[]
+  items       ShipmentItem[]
+  products    Product[]
+
+  @@index([chapter])
+}
+
+/// A charge that can appear on a landed-cost calculation.
+/// payee = GOVERNMENT means the money is collected on behalf of the Public Treasury
+/// and must never be counted as Kencole revenue.
+enum Payee {
+  GOVERNMENT
+  BROKER
+}
+
+enum ChargeBasis {
+  PERCENT_OF_CUSTOMS_VALUE // CIF
+  PERCENT_OF_DUTIABLE_TOTAL // CIF + duty + other levies (VAT-style base)
+  PERCENT_OF_GOODS_VALUE
+  FLAT
+  PER_LINE
+  PER_UNIT_WEIGHT
+}
+
+/// LINE: computed on each line against its own tariff heading (duty, VAT).
+/// SHIPMENT: computed once per entry, so a minimum or maximum bounds the entry
+/// rather than every line. Which charges are which is configuration.
+enum ChargeLevel {
+  LINE
+  SHIPMENT
+}
+
+model ChargeType {
+  id          String      @id @default(cuid())
+  code        String      @unique // "IMPORT_DUTY", "VAT", "ENV_LEVY", "PROCESSING_FEE", "BROKERAGE"
+  label       String
+  payee       Payee
+  basis       ChargeBasis
+  level       ChargeLevel @default(LINE)
+  sortOrder   Int         @default(100)
+  /// Charge codes this charge's base includes, for PERCENT_OF_DUTIABLE_TOTAL.
+  baseIncludes String[]   @default([])
+  active      Boolean     @default(true)
+  description String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  rateRules RateRule[]
+  charges   CustomsCharge[]
+}
+
+/// Configurable rate. Resolution order: most specific (hsCode) wins, then chapter,
+/// then the global default. Effective-dated so historic entries recalculate correctly.
+model RateRule {
+  id           String    @id @default(cuid())
+  chargeTypeId String
+  chargeType   ChargeType @relation(fields: [chargeTypeId], references: [id], onDelete: Cascade)
+  hsCodeId     String?
+  hsCode       HsCode?   @relation(fields: [hsCodeId], references: [id])
+  chapter      String?
+  rate         Decimal   @db.Decimal(9, 6) // fraction for percent bases, amount for FLAT
+  minAmount    Decimal?  @db.Decimal(14, 2)
+  maxAmount    Decimal?  @db.Decimal(14, 2)
+  effectiveFrom DateTime @default(now())
+  effectiveTo  DateTime?
+  /// Set false until the rate has been checked against the current Tariff Act /
+  /// Customs Management Regulations. Unconfirmed rates render as "unverified".
+  confirmed    Boolean   @default(false)
+  sourceNote   String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([chargeTypeId, hsCodeId])
+  @@index([chargeTypeId, chapter])
+}
+
+model PermitRequirement {
+  id        String  @id @default(cuid())
+  hsCodeId  String
+  hsCode    HsCode  @relation(fields: [hsCodeId], references: [id], onDelete: Cascade)
+  agency    String // e.g. "Department of Environmental Health Services"
+  permit    String
+  notes     String?
+  createdAt DateTime @default(now())
+}
+
+// ─────────────────────────────── Shipments ───────────────────────────────────
+
+enum ShipmentStatus {
+  DRAFT
+  DOCUMENTS_REQUIRED
+  DOCUMENTS_RECEIVED
+  UNDER_REVIEW
+  CLASSIFICATION_REVIEW
+  QUOTE_READY
+  AWAITING_PAYMENT
+  PAID
+  FREIGHT_IN_TRANSIT
+  ARRIVED_BAHAMAS
+  DECLARATION_PREPARED
+  SUBMITTED_TO_CUSTOMS
+  CUSTOMS_REVIEW
+  CUSTOMS_HOLD
+  DUTIES_DUE
+  CUSTOMS_RELEASED
+  READY_FOR_DELIVERY
+  OUT_FOR_DELIVERY
+  DELIVERED
+  CANCELLED
+}
+
+enum ImportType {
+  PERSONAL
+  COMMERCIAL
+}
+
+enum FreightMode {
+  AIR
+  SEA
+  COURIER
+}
+
+model Shipment {
+  id             String         @id @default(cuid())
+  reference      String         @unique // KCB-2026-000123
+  ownerId        String
+  owner          User           @relation("ShipmentOwner", fields: [ownerId], references: [id])
+  businessId     String?
+  business       Business?      @relation(fields: [businessId], references: [id])
+  importType     ImportType     @default(PERSONAL)
+  status         ShipmentStatus @default(DRAFT)
+  freightMode    FreightMode    @default(AIR)
+
+  supplierId     String?
+  supplier       Supplier?      @relation(fields: [supplierId], references: [id])
+  trackingNumber String?
+  airwayBill     String?
+  originCountry  String?
+  description    String?
+
+  currency       String   @default("USD")
+  /// Exchange rate to BSD at the time of quoting. BSD is pegged 1:1 to USD but the
+  /// field exists so non-USD invoices convert explicitly rather than implicitly.
+  fxRate         Decimal  @default(1) @db.Decimal(12, 6)
+  goodsValue     Decimal  @db.Decimal(14, 2) @default(0)
+  freightCost    Decimal  @db.Decimal(14, 2) @default(0)
+  insuranceCost  Decimal  @db.Decimal(14, 2) @default(0)
+  grossWeightKg  Decimal? @db.Decimal(10, 3)
+
+  /// Snapshot of the last calculated estimate. Never treated as an assessment.
+  estimateJson   Json?
+  estimatedAt    DateTime?
+
+  brokerApprovedAt DateTime?
+  brokerApprovedBy String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deletedAt DateTime?
+
+  items       ShipmentItem[]
+  documents   ShipmentDocument[]
+  history     ShipmentStatusHistory[]
+  declaration CustomsDeclaration?
+  quotes      Quote[]
+  invoices    Invoice[]
+  delivery    Delivery?
+  exceptions  ExceptionFlag[]
+  tickets     SupportTicket[]
+
+  @@index([ownerId, status])
+  @@index([businessId, status])
+  @@index([trackingNumber])
+}
+
+enum ClassificationStatus {
+  UNCLASSIFIED
+  AI_SUGGESTED
+  NEEDS_REVIEW
+  BROKER_APPROVED
+  EXCEPTION
+}
+
+model ShipmentItem {
+  id          String   @id @default(cuid())
+  shipmentId  String
+  shipment    Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  lineNumber  Int
+  description String
+  quantity    Decimal  @db.Decimal(12, 3) @default(1)
+  unitValue   Decimal  @db.Decimal(14, 2) @default(0)
+  lineValue   Decimal  @db.Decimal(14, 2) @default(0)
+  originCountry String?
+
+  hsCodeId             String?
+  hsCode               HsCode?  @relation(fields: [hsCodeId], references: [id])
+  suggestedHsCode      String?
+  confidence           Decimal? @db.Decimal(4, 3)
+  classificationStatus ClassificationStatus @default(UNCLASSIFIED)
+  brokerNote           String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  charges CustomsCharge[]
+
+  @@unique([shipmentId, lineNumber])
+}
+
+enum DocumentKind {
+  COMMERCIAL_INVOICE
+  AIRWAY_BILL
+  BILL_OF_LADING
+  PACKING_LIST
+  PERMIT
+  RECEIPT
+  CUSTOMS_ENTRY
+  PROOF_OF_DELIVERY
+  OTHER
+}
+
+model ShipmentDocument {
+  id          String       @id @default(cuid())
+  shipmentId  String
+  shipment    Shipment     @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  kind        DocumentKind
+  fileName    String
+  mimeType    String
+  sizeBytes   Int
+  storageKey  String
+  checksum    String?
+  scanStatus  String       @default("PENDING") // PENDING | CLEAN | INFECTED | SKIPPED
+  uploadedBy  String
+  createdAt   DateTime     @default(now())
+  deletedAt   DateTime?
+
+  extraction DocumentExtraction?
+
+  @@index([shipmentId])
+}
+
+/// Keeps the four-value provenance chain the brief requires:
+/// what the document said, what the model read, what the customer fixed,
+/// what staff fixed. Nothing overwrites anything.
+model DocumentExtraction {
+  id            String   @id @default(cuid())
+  documentId    String   @unique
+  document      ShipmentDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  provider      String
+  rawJson       Json
+  extractedJson Json
+  userJson      Json?
+  staffJson     Json?
+  confidence    Decimal? @db.Decimal(4, 3)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model ShipmentStatusHistory {
+  id         String         @id @default(cuid())
+  shipmentId String
+  shipment   Shipment       @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  from       ShipmentStatus?
+  to         ShipmentStatus
+  actorId    String?
+  note       String?
+  createdAt  DateTime       @default(now())
+
+  @@index([shipmentId, createdAt])
+}
+
+// ─────────────────────────────── Customs ─────────────────────────────────────
+
+enum DeclarationStatus {
+  NOT_STARTED
+  PREPARED
+  SUBMITTED
+  QUERIED
+  ASSESSED
+  RELEASED
+}
+
+model CustomsDeclaration {
+  id            String   @id @default(cuid())
+  shipmentId    String   @unique
+  shipment      Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  status        DeclarationStatus @default(NOT_STARTED)
+  /// Reference recorded by staff after submitting through Click2Clear.
+  entryNumber   String?
+  regimeCode    String?
+  submittedAt   DateTime?
+  submittedBy   String?
+  assessedTotal Decimal? @db.Decimal(14, 2)
+  releasedAt    DateTime?
+  payloadJson   Json? // structured declaration summary produced for the declarant
+  adapter       String   @default("manual")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+/// A single calculated charge line. `payee` is denormalised from ChargeType so that
+/// revenue reporting never has to join to decide whose money it is.
+model CustomsCharge {
+  id           String     @id @default(cuid())
+  shipmentItemId String?
+  shipmentItem ShipmentItem? @relation(fields: [shipmentItemId], references: [id], onDelete: Cascade)
+  quoteId      String?
+  quote        Quote?     @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  chargeTypeId String
+  chargeType   ChargeType @relation(fields: [chargeTypeId], references: [id])
+  payee        Payee
+  basisAmount  Decimal    @db.Decimal(14, 2)
+  rateApplied  Decimal    @db.Decimal(9, 6)
+  amount       Decimal    @db.Decimal(14, 2)
+  rateRuleId   String?
+  createdAt    DateTime   @default(now())
+
+  @@index([quoteId])
+}
+
+// ─────────────────────────────── Money ───────────────────────────────────────
+
+enum QuoteStatus {
+  DRAFT
+  ISSUED
+  ACCEPTED
+  REJECTED
+  EXPIRED
+  SUPERSEDED
+}
+
+model Quote {
+  id            String      @id @default(cuid())
+  reference     String      @unique
+  shipmentId    String
+  shipment      Shipment    @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  status        QuoteStatus @default(DRAFT)
+  customsValue  Decimal     @db.Decimal(14, 2)
+  governmentTotal Decimal   @db.Decimal(14, 2)
+  brokerTotal   Decimal     @db.Decimal(14, 2)
+  grandTotal    Decimal     @db.Decimal(14, 2)
+  /// True only when a licensed broker has approved every classification on the shipment.
+  brokerApproved Boolean    @default(false)
+  expiresAt     DateTime?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  charges  CustomsCharge[]
+  invoices Invoice[]
+}
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  VOIDED
+  REFUNDED
+}
+
+model Invoice {
+  id         String        @id @default(cuid())
+  reference  String        @unique
+  shipmentId String?
+  shipment   Shipment?     @relation(fields: [shipmentId], references: [id])
+  quoteId    String?
+  quote      Quote?        @relation(fields: [quoteId], references: [id])
+  businessId String?
+  business   Business?     @relation(fields: [businessId], references: [id])
+  billToEmail String
+  status     InvoiceStatus @default(DRAFT)
+  /// Disbursements collected for the Public Treasury. A liability, not revenue.
+  governmentTotal Decimal  @db.Decimal(14, 2) @default(0)
+  /// Kencole's own fees. This is the only figure that reaches the revenue reports.
+  brokerTotal     Decimal  @db.Decimal(14, 2) @default(0)
+  total      Decimal       @db.Decimal(14, 2) @default(0)
+  amountPaid Decimal       @db.Decimal(14, 2) @default(0)
+  dueAt      DateTime?
+  issuedAt   DateTime?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  lines    InvoiceLine[]
+  payments Payment[]
+
+  @@index([businessId, status])
+}
+
+model InvoiceLine {
+  id          String  @id @default(cuid())
+  invoiceId   String
+  invoice     Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  description String
+  payee       Payee
+  amount      Decimal @db.Decimal(14, 2)
+  chargeCode  String?
+  sortOrder   Int     @default(100)
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+}
+
+model Payment {
+  id          String        @id @default(cuid())
+  invoiceId   String
+  invoice     Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  provider    String // "manual" | "stripe" | "bank_transfer" | "credit"
+  providerRef String?
+  amount      Decimal       @db.Decimal(14, 2)
+  status      PaymentStatus @default(PENDING)
+  receivedAt  DateTime?
+  recordedBy  String?
+  createdAt   DateTime      @default(now())
+
+  @@index([invoiceId])
+}
+
+model Plan {
+  id            String  @id @default(cuid())
+  code          String  @unique
+  name          String
+  audience      String // "B2C" | "B2B"
+  monthlyPrice  Decimal @db.Decimal(10, 2)
+  currency      String  @default("BSD")
+  features      String[]
+  /// Overrides applied to PricingRule lookups for subscribers on this plan.
+  brokerageDiscount Decimal @default(0) @db.Decimal(5, 4)
+  deliveryDiscount  Decimal @default(0) @db.Decimal(5, 4)
+  active        Boolean @default(true)
+  sortOrder     Int     @default(100)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  subscriptions Subscription[]
+}
+
+model Subscription {
+  id        String   @id @default(cuid())
+  planId    String
+  plan      Plan     @relation(fields: [planId], references: [id])
+  status    String   @default("ACTIVE") // ACTIVE | PAST_DUE | CANCELLED
+  startedAt DateTime @default(now())
+  endsAt    DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  businesses Business[]
+  consumers  ConsumerProfile[]
+}
+
+enum PricingScope {
+  GLOBAL
+  PLAN
+  BUSINESS
+}
+
+/// Kencole's own fee rules. Resolution: BUSINESS > PLAN > GLOBAL, then highest priority.
+model PricingRule {
+  id          String       @id @default(cuid())
+  chargeCode  String // matches a ChargeType with payee = BROKER
+  scope       PricingScope @default(GLOBAL)
+  planCode    String?
+  businessId  String?
+  business    Business?    @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  importType  ImportType?
+  minValue    Decimal?     @db.Decimal(14, 2)
+  maxValue    Decimal?     @db.Decimal(14, 2)
+  flatAmount  Decimal?     @db.Decimal(14, 2)
+  percentRate Decimal?     @db.Decimal(9, 6)
+  perLineAmount Decimal?   @db.Decimal(14, 2)
+  minFee      Decimal?     @db.Decimal(14, 2)
+  maxFee      Decimal?     @db.Decimal(14, 2)
+  priority    Int          @default(100)
+  active      Boolean      @default(true)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@index([chargeCode, scope])
+}
+
+// ─────────────────────────────── Procurement ─────────────────────────────────
+
+enum ProcurementStatus {
+  SUBMITTED
+  QUOTING
+  QUOTED
+  ACCEPTED
+  REJECTED
+  CONVERTED
+  CANCELLED
+}
+
+model ProcurementRequest {
+  id           String            @id @default(cuid())
+  reference    String            @unique
+  businessId   String
+  business     Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  requestedBy  String
+  productUrl   String?
+  description  String
+  quantity     Int               @default(1)
+  specifications String?
+  targetBudget Decimal?          @db.Decimal(14, 2)
+  requiredBy   DateTime?
+  notes        String?
+  status       ProcurementStatus @default(SUBMITTED)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  quotes ProcurementQuote[]
+}
+
+model ProcurementQuote {
+  id            String   @id @default(cuid())
+  requestId     String
+  request       ProcurementRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  productCost   Decimal  @db.Decimal(14, 2)
+  domesticTransport Decimal @default(0) @db.Decimal(14, 2)
+  internationalFreight Decimal @default(0) @db.Decimal(14, 2)
+  insurance     Decimal  @default(0) @db.Decimal(14, 2)
+  governmentEstimate Decimal @default(0) @db.Decimal(14, 2)
+  procurementFee Decimal @default(0) @db.Decimal(14, 2)
+  brokerageFee  Decimal  @default(0) @db.Decimal(14, 2)
+  deliveryFee   Decimal  @default(0) @db.Decimal(14, 2)
+  total         Decimal  @db.Decimal(14, 2)
+  validUntil    DateTime?
+  preparedBy    String
+  createdAt     DateTime @default(now())
+}
+
+// ─────────────────────────────── Delivery ────────────────────────────────────
+
+enum DeliveryStatus {
+  UNSCHEDULED
+  SCHEDULED
+  ASSIGNED
+  PICKED_UP
+  OUT_FOR_DELIVERY
+  DELIVERED
+  FAILED
+}
+
+model Driver {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vehicle   String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  deliveries Delivery[]
+}
+
+model Delivery {
+  id          String         @id @default(cuid())
+  shipmentId  String         @unique
+  shipment    Shipment       @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  addressId   String
+  address     Address        @relation(fields: [addressId], references: [id])
+  driverId    String?
+  driver      Driver?        @relation(fields: [driverId], references: [id])
+  status      DeliveryStatus @default(UNSCHEDULED)
+  scheduledFor DateTime?
+  fee         Decimal        @default(0) @db.Decimal(14, 2)
+  podStorageKey String?
+  signatureName String?
+  note        String?
+  deliveredAt DateTime?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@index([driverId, status])
+}
+
+// ─────────────────────────────── Ops support ─────────────────────────────────
+
+enum Severity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+model ExceptionFlag {
+  id         String   @id @default(cuid())
+  shipmentId String
+  shipment   Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  code       String
+  severity   Severity
+  message    String
+  resolvedAt DateTime?
+  resolvedBy String?
+  createdAt  DateTime @default(now())
+
+  @@index([shipmentId, resolvedAt])
+}
+
+enum TicketStatus {
+  OPEN
+  WAITING_CUSTOMER
+  WAITING_STAFF
+  RESOLVED
+}
+
+model SupportTicket {
+  id         String       @id @default(cuid())
+  reference  String       @unique
+  userId     String
+  user       User         @relation(fields: [userId], references: [id])
+  shipmentId String?
+  shipment   Shipment?    @relation(fields: [shipmentId], references: [id])
+  category   String
+  subject    String
+  status     TicketStatus @default(OPEN)
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  messages SupportMessage[]
+}
+
+model SupportMessage {
+  id        String        @id @default(cuid())
+  ticketId  String
+  ticket    SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User          @relation(fields: [authorId], references: [id])
+  body      String
+  internal  Boolean       @default(false)
+  createdAt DateTime      @default(now())
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  channel   String // EMAIL | SMS | WHATSAPP | IN_APP
+  event     String
+  subject   String
+  body      String
+  sentAt    DateTime?
+  readAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId, readAt])
+}
+
+enum LeadStage {
+  LEAD
+  CONTACTED
+  QUALIFIED
+  PROPOSAL
+  TRIAL
+  WON
+  LOST
+}
+
+model Lead {
+  id            String    @id @default(cuid())
+  company       String
+  contactName   String
+  email         String?
+  phone         String?
+  industry      String?
+  monthlyVolume Decimal?  @db.Decimal(14, 2)
+  currentBroker String?
+  stage         LeadStage @default(LEAD)
+  ownerId       String?
+  nextFollowUp  DateTime?
+  notes         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  activities CrmActivity[]
+}
+
+model CrmActivity {
+  id        String   @id @default(cuid())
+  leadId    String
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  actorId   String?
+  kind      String
+  summary   String
+  occurredAt DateTime @default(now())
+}
+
+/// Append-only. No update or delete path exists in the application layer;
+/// see docs/ARCHITECTURE.md for the database-level grant that enforces it.
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id])
+  action     String
+  entityType String
+  entityId   String
+  oldValue   Json?
+  newValue   Json?
+  reason     String?
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([actorId, createdAt])
+}
+
+// ─────────────────────────────── Reference numbers ───────────────────────────
+
+/// Monotonic counters behind the human-readable references (KCB-2026-000417).
+/// Deriving the next number from a COUNT of existing rows hands the same number
+/// to two concurrent callers, and re-issues a number after a deletion. These
+/// references go on customs entries and get read to customers over the phone, so
+/// a number is burnt once used and never returned to the pool.
+model ReferenceCounter {
+  key       String   @id
+  last      Int
+  updatedAt DateTime @updatedAt
+}
+
+/// Document bytes, for deployments without object storage (STORAGE_PROVIDER=database).
+/// Fine for a preview or light use; move to S3-compatible storage for volume.
+model StoredObject {
+  key         String   @id
+  contentType String
+  sizeBytes   Int
+  checksum    String
+  body        Bytes
+  createdAt   DateTime @default(now())
+}
