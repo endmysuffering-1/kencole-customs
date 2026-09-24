@@ -10,4 +10,5 @@ export const DOCUMENT_KIND: Record<string, string> = {
   PROOF_OF_DELIVERY: "Proof of delivery", OTHER: "Other document",
 };
 
-export const FREIGHT_MODE: Record<string, string> = { AIR: "Air freight", SEA: "Sea freight", COURIER: "Courier" };
+/** How the goods reached The Bahamas. Kencole does not move them; this says how they arrived. */
+export const FREIGHT_MODE: Record<string, string> = { AIR: "Arrived by air", SEA: "Arrived by sea", COURIER: "Arrived by courier" };

@@ -37,6 +37,11 @@ export const shipmentSchema = z.object({
   supplierCountry: z.string().trim().max(2).optional().or(z.literal("")),
   trackingNumber: z.string().trim().max(80).optional().or(z.literal("")),
   airwayBill: z.string().trim().max(80).optional().or(z.literal("")),
+  /** Kencole clears goods already in The Bahamas, so every shipment says where
+   *  they are waiting: a port, the airport, a courier's warehouse. */
+  heldAt: z.string({ required_error: "Tell us where the goods are waiting to be cleared." })
+    .trim().min(3, "Tell us where the goods are waiting to be cleared.").max(200),
+  deliveryRequested: z.boolean().default(false),
   originCountry: z.string().trim().max(2).optional().or(z.literal("")),
   description: z.string().trim().max(1000).optional().or(z.literal("")),
   currency: z.string().trim().length(3).default("USD"),
@@ -53,7 +58,7 @@ export const estimateSchema = z.object({
   currency: z.string().trim().length(3).default("USD"),
   importType: z.enum(["PERSONAL", "COMMERCIAL"]).default("PERSONAL"),
   hsCode: z.string().trim().max(20).optional().or(z.literal("")),
-  deliveryRequested: z.boolean().default(true),
+  deliveryRequested: z.boolean().default(false),
   rush: z.boolean().default(false),
 });
 
@@ -115,6 +120,8 @@ export const shipmentUpdateSchema = z.object({
   supplierCountry: z.string().trim().max(2).optional(),
   trackingNumber: z.string().trim().max(80).optional(),
   airwayBill: z.string().trim().max(80).optional(),
+  heldAt: z.string().trim().min(3).max(200).optional(),
+  deliveryRequested: z.boolean().optional(),
   originCountry: z.string().trim().max(2).optional(),
   description: z.string().trim().max(1000).optional(),
   currency: z.string().trim().length(3).optional(),

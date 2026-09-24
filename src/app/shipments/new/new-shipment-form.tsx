@@ -41,6 +41,8 @@ export function NewShipmentForm() {
           originCountry: String(form.get("supplierCountry") ?? "").toUpperCase(),
           freightMode: form.get("freightMode"),
           trackingNumber: form.get("trackingNumber"),
+          heldAt: form.get("heldAt"),
+          deliveryRequested: form.get("handover") === "deliver",
           currency: form.get("currency"),
           freightCost: form.get("freightCost") || "0",
           insuranceCost: form.get("insuranceCost") || "0",
@@ -63,25 +65,31 @@ export function NewShipmentForm() {
       <FormError message={error} />
 
       <Card>
-        <CardHeader title="What's coming" />
+        <CardHeader title="Your goods" eyebrow="We clear goods that have already arrived in The Bahamas" />
         <div className="grid gap-5 p-5 sm:grid-cols-2">
+          <Field
+            label="Where are they now?" htmlFor="heldAt" className="sm:col-span-2" error={fields.heldAt}
+            hint="The port, the airport cargo shed, or your courier's warehouse, as it appears on your arrival notice."
+          >
+            <input id="heldAt" name="heldAt" required minLength={3} maxLength={200} placeholder="e.g. Nassau Container Port" className={inputClass} />
+          </Field>
           <Field label="Short description" htmlFor="description" className="sm:col-span-2" error={fields.description}>
             <input id="description" name="description" placeholder="e.g. Laptop for work" className={inputClass} />
           </Field>
           <Field label="Seller or supplier" htmlFor="supplierName" error={fields.supplierName}>
             <input id="supplierName" name="supplierName" placeholder="e.g. Amazon.com" className={inputClass} />
           </Field>
-          <Field label="Shipped from (country code)" htmlFor="supplierCountry" hint="Two letters, e.g. US" error={fields.supplierCountry}>
+          <Field label="Bought from (country code)" htmlFor="supplierCountry" hint="Two letters, e.g. US" error={fields.supplierCountry}>
             <input id="supplierCountry" name="supplierCountry" maxLength={2} placeholder="US" className={inputClass} />
           </Field>
-          <Field label="How it's travelling" htmlFor="freightMode">
+          <Field label="How it arrived" htmlFor="freightMode">
             <select id="freightMode" name="freightMode" defaultValue="AIR" className={inputClass}>
-              <option value="AIR">Air freight</option>
-              <option value="SEA">Sea freight</option>
-              <option value="COURIER">Courier</option>
+              <option value="AIR">By air</option>
+              <option value="SEA">By sea</option>
+              <option value="COURIER">Through a courier</option>
             </select>
           </Field>
-          <Field label="Tracking number" htmlFor="trackingNumber" hint="Optional" error={fields.trackingNumber}>
+          <Field label="Waybill, bill of lading or tracking number" htmlFor="trackingNumber" hint="Optional, but it speeds things up" error={fields.trackingNumber}>
             <input id="trackingNumber" name="trackingNumber" className={inputClass} />
           </Field>
         </div>
@@ -122,7 +130,26 @@ export function NewShipmentForm() {
       </Card>
 
       <Card>
-        <CardHeader title="Freight and insurance" eyebrow="Both are dutiable in The Bahamas" />
+        <CardHeader title="Once it clears" />
+        <fieldset className="grid gap-3 p-5 sm:grid-cols-2">
+          <legend className="sr-only">Collection or delivery</legend>
+          {[
+            { value: "collect", title: "I'll collect it", body: "We'll tell you when it's released and what to bring." },
+            { value: "deliver", title: "Deliver it to me", body: "We'll call to arrange the address and time. A delivery fee applies." },
+          ].map((o) => (
+            <label key={o.value} className="flex cursor-pointer gap-3 rounded-md p-4 ring-1 ring-inset ring-ink/15 has-[:checked]:ring-2 has-[:checked]:ring-ink">
+              <input type="radio" name="handover" value={o.value} defaultChecked={o.value === "collect"} className="mt-1 h-4 w-4 border-ink/30 accent-ink focus:ring-ink" />
+              <span>
+                <span className="block text-sm font-semibold">{o.title}</span>
+                <span className="block text-sm text-ink-500">{o.body}</span>
+              </span>
+            </label>
+          ))}
+        </fieldset>
+      </Card>
+
+      <Card>
+        <CardHeader title="Freight and insurance you paid" eyebrow="Both are part of the customs value in The Bahamas" />
         <div className="grid gap-5 p-5 sm:grid-cols-3">
           <Field label="Currency" htmlFor="currency" hint="BSD is pegged 1:1 to USD">
             <select id="currency" name="currency" defaultValue="USD" className={inputClass}>

@@ -63,6 +63,8 @@ export async function createShipment(input: {
       supplierId,
       trackingNumber: data.trackingNumber || null,
       airwayBill: data.airwayBill || null,
+      heldAt: data.heldAt,
+      deliveryRequested: data.deliveryRequested,
       originCountry: data.originCountry || null,
       description: data.description || null,
       currency: data.currency,
@@ -138,7 +140,8 @@ export async function estimateShipment(shipmentId: string): Promise<LandedCostRe
     planCode: plan?.code ?? null,
     brokerageDiscount: plan?.brokerageDiscount?.toString() ?? 0,
     deliveryDiscount: plan?.deliveryDiscount?.toString() ?? 0,
-    deliveryRequested: true,
+    // Delivery is only quoted to a customer who asked for it; the rest collect.
+    deliveryRequested: shipment.deliveryRequested,
   });
 
   const result = calculateLandedCost(
@@ -340,7 +343,7 @@ const STATUS_NOTIFICATIONS: Partial<
   CUSTOMS_RELEASED: {
     event: "customs.released",
     subject: "Released by customs",
-    body: "Your shipment has cleared and is being prepared for delivery.",
+    body: "Your shipment has cleared customs. We'll be in touch about collection or delivery.",
   },
   DELIVERED: {
     event: "delivery.completed",
@@ -507,7 +510,8 @@ export async function updateShipment(input: { principal: Principal; shipmentId: 
   }
   assertSupportedCurrency(data.currency);
 
-  const valueFields = ["goodsValue", "freightCost", "insuranceCost", "currency"] as const;
+  // Asking for delivery, or dropping it, changes the fee quoted, so it counts as a value.
+  const valueFields = ["goodsValue", "freightCost", "insuranceCost", "currency", "deliveryRequested"] as const;
   const valueChanged =
     data.items !== undefined ||
     valueFields.some((f) => data[f] !== undefined && String(data[f]) !== String(found[f]));
@@ -541,6 +545,8 @@ export async function updateShipment(input: { principal: Principal; shipmentId: 
         freightMode: data.freightMode,
         trackingNumber: data.trackingNumber,
         airwayBill: data.airwayBill,
+        heldAt: data.heldAt,
+        deliveryRequested: data.deliveryRequested,
         originCountry: data.originCountry,
         description: data.description,
         currency: data.currency?.toUpperCase(),

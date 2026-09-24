@@ -15,15 +15,16 @@ export const OPS_QUEUES: { key: string; title: string; hint: string; statuses: S
   { key: "review", title: "Ready to review", hint: "Paperwork in. Check values and suggest tariff codes.", statuses: ["DOCUMENTS_RECEIVED", "UNDER_REVIEW"] },
   { key: "classification", title: "With the broker", hint: "Classifications waiting for a licensed broker.", statuses: ["CLASSIFICATION_REVIEW"] },
   { key: "customer", title: "Waiting on the customer", hint: "Quote sent or invoice unpaid.", statuses: ["QUOTE_READY", "AWAITING_PAYMENT"] },
-  { key: "arrival", title: "Paid, awaiting arrival", hint: "Track the freight and prepare the entry.", statuses: ["PAID", "FREIGHT_IN_TRANSIT", "ARRIVED_BAHAMAS", "DECLARATION_PREPARED"] },
+  { key: "entry", title: "Paid, entry to lodge", hint: "Prepare the customs entry; the broker lodges it.", statuses: ["PAID", "DECLARATION_PREPARED"] },
   { key: "customs", title: "At customs", hint: "Submitted entries, holds and assessed duties.", statuses: ["SUBMITTED_TO_CUSTOMS", "CUSTOMS_REVIEW", "CUSTOMS_HOLD", "DUTIES_DUE"] },
-  { key: "delivery", title: "Delivery", hint: "Released and on the way to the customer.", statuses: ["CUSTOMS_RELEASED", "READY_FOR_DELIVERY", "OUT_FOR_DELIVERY"] },
+  { key: "delivery", title: "Released", hint: "Awaiting collection, or on the way to the customer.", statuses: ["CUSTOMS_RELEASED", "READY_FOR_DELIVERY", "OUT_FOR_DELIVERY"] },
 ];
 
 const SEVERITY_RANK = { CRITICAL: 0, WARNING: 1, INFO: 2 } as const;
 
 const boardSelect = {
   id: true, reference: true, status: true, description: true, goodsValue: true, currency: true,
+  heldAt: true, deliveryRequested: true,
   updatedAt: true, createdAt: true,
   owner: { select: { fullName: true } },
   business: { select: { legalName: true, tradingName: true } },
@@ -48,6 +49,8 @@ function card(s: BoardRow, now: Date) {
     status: s.status,
     statusLabel: label(s.status),
     description: s.description,
+    heldAt: s.heldAt,
+    deliveryRequested: s.deliveryRequested,
     goodsValue: s.goodsValue,
     customer: s.business ? (s.business.tradingName ?? s.business.legalName) : s.owner.fullName,
     lines: s.items.length,

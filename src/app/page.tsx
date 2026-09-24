@@ -3,10 +3,10 @@ import Link from "next/link";
 import { Calculator } from "@/components/public/calculator";
 
 const STEPS = [
-  { title: "Tell us what's coming", body: "Add your items and upload the seller's invoice. It takes a few minutes." },
+  { title: "Tell us what's arrived", body: "Say where your goods are waiting and upload the seller's invoice. It takes a few minutes." },
   { title: "A licensed broker reviews it", body: "Every item is classified by a licensed Bahamian customs broker before you're quoted." },
   { title: "Pay one invoice", body: "Government duty and VAT, and our fees, shown separately so you know where every dollar goes." },
-  { title: "We clear it and deliver", body: "We lodge your entry with Bahamas Customs and bring your goods to your door." },
+  { title: "We clear it, you collect", body: "We lodge your entry with Bahamas Customs. Collect your goods once released, or we'll deliver them." },
 ];
 
 export default function Home() {
@@ -15,10 +15,11 @@ export default function Home() {
       <section className="bg-ink text-white">
         <div className="mx-auto grid max-w-6xl gap-10 px-4 pb-16 pt-12 sm:px-6 lg:grid-cols-[0.8fr_1.2fr] lg:items-start lg:pt-20">
           <div className="lg:pt-6">
-            <p className="text-sm font-semibold uppercase tracking-widest text-white/60">Licensed customs brokerage · Nassau</p>
-            <h1 className="mt-4 text-display font-bold leading-[1.05] tracking-tight">Know what it costs before it ships.</h1>
+            <p className="text-sm font-semibold uppercase tracking-widest text-white/60">Licensed customs brokers · Nassau</p>
+            <h1 className="mt-4 text-display font-bold leading-[1.05] tracking-tight">Your goods are here. We'll clear them.</h1>
             <p className="mt-5 max-w-md text-lg text-white/75">
-              Import duty, VAT and our fees, worked out up front. Then we clear it through Bahamas Customs and deliver it.
+              Waiting at the port, the airport or your courier? We work out the duty, VAT and our fees up front, clear
+              it through Bahamas Customs, and you collect it or we deliver.
             </p>
             <div className="mt-8 flex flex-wrap gap-3 text-sm">
               <Link href="/register" className="rounded-md bg-white px-4 py-2 font-semibold text-ink hover:bg-paper">Open an account</Link>
@@ -58,7 +59,7 @@ export default function Home() {
             </div>
             <div className="rounded-card border-l-4 border-teal bg-paper-card p-5 shadow-card">
               <p className="font-semibold">Kencole's fees</p>
-              <p className="mt-1 text-ink-700">Brokerage, processing and delivery, set out before you pay.</p>
+              <p className="mt-1 text-ink-700">Brokerage and processing, plus delivery if you want it, set out before you pay.</p>
             </div>
           </div>
         </div>

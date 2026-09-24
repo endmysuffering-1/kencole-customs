@@ -31,7 +31,7 @@ export function Calculator() {
   const [freight, setFreight] = useState("60");
   const [insurance, setInsurance] = useState("");
   const [importType, setImportType] = useState<"PERSONAL" | "COMMERCIAL">("PERSONAL");
-  const [delivery, setDelivery] = useState(true);
+  const [delivery, setDelivery] = useState(false);
   const [what, setWhat] = useState("");
   const [picked, setPicked] = useState<Code | null>(null);
   const [matches, setMatches] = useState<Code[]>([]);
@@ -91,7 +91,7 @@ export function Calculator() {
   return (
     <div className="grid overflow-hidden rounded-card bg-paper-card text-ink shadow-card lg:grid-cols-[1fr_1.1fr]">
       <form className="space-y-4 p-6 sm:p-8" onSubmit={(e) => e.preventDefault()}>
-        <h2 className="text-lg font-bold">What will it cost to bring in?</h2>
+        <h2 className="text-lg font-bold">What will it cost to clear?</h2>
         <Field label="What are you importing?" htmlFor="calc-what" hint={picked ? `Tariff heading ${picked.code}` : "Optional, but duty depends on it."}>
           <input
             id="calc-what"
@@ -116,7 +116,7 @@ export function Calculator() {
           <Field label="Price paid (USD)" htmlFor="calc-goods">
             <input id="calc-goods" inputMode="decimal" value={goods} onChange={(e) => setGoods(e.target.value)} className={`${inputClass} num`} />
           </Field>
-          <Field label="Shipping (USD)" htmlFor="calc-freight">
+          <Field label="Freight you paid (USD)" htmlFor="calc-freight">
             <input id="calc-freight" inputMode="decimal" value={freight} onChange={(e) => setFreight(e.target.value)} className={`${inputClass} num`} />
           </Field>
           <Field label="Insurance (USD)" htmlFor="calc-ins" hint="Leave blank if none.">
@@ -130,8 +130,8 @@ export function Calculator() {
           </Field>
         </div>
         <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={delivery} onChange={(e) => setDelivery(e.target.checked)} className="h-4 w-4 rounded border-ink/30 text-ink focus:ring-ink" />
-          Deliver it to my door in New Providence
+          <input type="checkbox" checked={delivery} onChange={(e) => setDelivery(e.target.checked)} className="h-4 w-4 rounded border-ink/30 accent-ink focus:ring-ink" />
+          Deliver it to me once it clears
         </label>
       </form>
 

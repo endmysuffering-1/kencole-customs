@@ -29,6 +29,7 @@ const PDF = Buffer.from("%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n");
 const shipmentInput = (extra: Record<string, unknown> = {}) =>
   shipmentSchema.parse({
     goodsValue: "100.00",
+    heldAt: "Air cargo, Lynden Pindling International Airport",
     items: [{ description: "Cotton t-shirts", quantity: "10", unitValue: "10.00" }],
     ...extra,
   });
@@ -295,5 +296,45 @@ describe("the public estimate", () => {
 
   it("refuses a currency it cannot convert", async () => {
     await expect(quickEstimate(estimateSchema.parse({ goodsValue: "10", currency: "GBP" }))).rejects.toThrow(/USD or BSD/);
+  });
+
+  it("quotes delivery only to someone who asks for it", async () => {
+    await world();
+    const codes = async (deliveryRequested?: boolean) =>
+      (await quickEstimate(estimateSchema.parse({ goodsValue: "100", deliveryRequested }))).charges.map((c) => c.chargeCode);
+    expect(await codes()).not.toContain("DELIVERY");
+    expect(await codes(false)).not.toContain("DELIVERY");
+    expect(await codes(true)).toContain("DELIVERY");
+  });
+});
+
+describe("goods already in The Bahamas", () => {
+  it("will not open a shipment without saying where the goods are waiting", () => {
+    expect(() => shipmentInput({ heldAt: undefined })).toThrow(/where the goods are waiting/);
+    expect(() => shipmentInput({ heldAt: " " })).toThrow(/where the goods are waiting/);
+  });
+
+  it("keeps where the goods are and prices delivery only when the customer asks", async () => {
+    const { p } = await world();
+    const collect = await openShipment({ principal: p.consumerA, data: shipmentInput() });
+    const deliver = await openShipment({ principal: p.consumerA, data: shipmentInput({ deliveryRequested: true }) });
+    const codes = async (id: string) => {
+      const s = await db.shipment.findUniqueOrThrow({ where: { id } });
+      return (s.estimateJson as unknown as { charges: { chargeCode: string }[] }).charges.map((c) => c.chargeCode);
+    };
+    expect(collect.heldAt).toBe("Air cargo, Lynden Pindling International Airport");
+    expect(await codes(collect.id)).not.toContain("DELIVERY");
+    expect(await codes(deliver.id)).toContain("DELIVERY");
+  });
+
+  it("tells a collecting customer their goods are collected, not delivered", async () => {
+    const { p } = await world();
+    const s = await openShipment({ principal: p.consumerA, data: shipmentInput() });
+    await db.shipment.update({ where: { id: s.id }, data: { status: "DELIVERED" } });
+    const view = await getShipment(p.consumerA, s.id);
+    expect(view.statusLabel).toBe("Collected");
+    expect(view.milestones.at(-1)?.label).toBe("Collected");
+    await db.shipment.update({ where: { id: s.id }, data: { deliveryRequested: true } });
+    expect((await getShipment(p.consumerA, s.id)).statusLabel).toBe("Delivered");
   });
 });

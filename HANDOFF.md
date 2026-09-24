@@ -2,7 +2,22 @@
 
 A B2B + B2C customs brokerage and import management platform for a licensed
 customs broker in The Bahamas. This package contains the schema, the domain and
-service layers, a development seed and the `/api/v1` routes. The UI is not built yet.
+service layers, a development seed, the `/api/v1` routes and the UI.
+
+**What Kencole does.** Kencole is a customs broker, not a freight forwarder. It
+clears goods that are already in The Bahamas, waiting at a port, the airport
+cargo shed or a courier's warehouse. It does not move goods here. Once they are
+released the customer collects them, or Kencole delivers locally if asked. So:
+
+- Every shipment records where the goods are waiting (`Shipment.heldAt`,
+  required when a shipment is opened) and whether the customer wants delivery
+  (`Shipment.deliveryRequested`, default no). Delivery is quoted only when asked.
+- The workflow has no freight leg: once paid, the entry is prepared
+  (`PAID → DECLARATION_PREPARED`). The earlier `FREIGHT_IN_TRANSIT` and
+  `ARRIVED_BAHAMAS` statuses were removed (migration
+  `20260924100000_goods_already_in_the_bahamas`).
+- A customer who collects sees "Released, ready to collect" and "Collected"
+  where one who asked for delivery sees "Delivered".
 
 ## What is here and working
 
@@ -53,7 +68,7 @@ and refuses any database whose name does not end in `_test` or that is not local
 
 **Seed data** — `prisma/seed.ts`. A development dataset: 22 users covering every
 `Role` (5 consumers, 5 businesses with an owner and an importer each, 7 staff),
-10 suppliers, and 30 shipments that between them sit in all 20 `ShipmentStatus`
+10 suppliers, and 30 shipments that between them sit in all 18 `ShipmentStatus`
 values, with the quotes, invoices, payments, documents, declarations, deliveries
 and exception flags each status implies. Each seeded commercial invoice is a
 small one-page PDF written to storage and stamped as sample data, so the broker

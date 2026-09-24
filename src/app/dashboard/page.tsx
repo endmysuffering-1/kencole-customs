@@ -34,7 +34,7 @@ export default async function Dashboard() {
         <Card className="mt-8 px-6 py-12 text-center">
           <h2 className="text-lg font-semibold">No shipments yet</h2>
           <p className="mx-auto mt-2 max-w-md text-ink-500">
-            Tell us what you're importing and we'll estimate the duty, VAT and our fees before it ships.
+            Tell us what's arrived and where it's waiting. We'll estimate the duty, VAT and our fees before you pay anything.
           </p>
           <LinkButton href="/shipments/new" className="mt-6">Start a shipment</LinkButton>
         </Card>
