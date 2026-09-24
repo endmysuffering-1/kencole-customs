@@ -24,7 +24,11 @@ delivery, CRM, exceptions and an append-only audit log.
 
 **Service layer** — `src/lib/services/`. Shipment creation, estimation,
 transitions, quoting, invoicing, payment recording, revenue reporting,
-classification decisions.
+classification decisions, role changes (`user-service.ts`) and rate changes
+(`rate-service.ts`). A rate is never edited in place: a change closes the current
+rule and opens a new one, so historic entries still recalculate on the rate they
+were assessed under. Changes that must be audited write the change and the audit
+record in one transaction (`recordAudit(entry, tx)`).
 
 **Provider boundaries** — `src/lib/providers/`. Storage (local + S3 interface),
 payments (manual + Stripe interface), invoice extraction (mock + external),
@@ -34,7 +38,18 @@ adapter.
 **Auth and audit** — `src/lib/auth/` (scrypt passwords, hashed session tokens,
 capability + ownership checks) and `src/lib/audit.ts`.
 
-**Tests** — `tests/landed-cost.test.ts`, 18 passing. Run `npm test`.
+**Tests** — 116 passing. Run `npm test`. Pure suites cover landed cost, pricing
+scope (BUSINESS > PLAN > GLOBAL), RBAC and cross-tenant access, and the state
+machine. Integration suites in `tests/integration/` run the real services
+against Postgres: revenue separation, audit reasons (classification and rate
+changes), tenancy and role escalation, transition guards, reference allocation,
+and double-submit races. Each fix they guard was checked by re-breaking it and
+watching the suite fail.
+
+The integration suites need Postgres. Each run drops and recreates a dedicated
+test database — `DATABASE_URL` with `_test` appended, or `TEST_DATABASE_URL` —
+and refuses any database whose name does not end in `_test` or that is not local
+(`TEST_DB_ALLOW_NON_LOCAL=1` overrides the second).
 
 **Seed data** — `prisma/seed.ts`. A development dataset: 22 users covering every
 `Role` (5 consumers, 5 businesses with an owner and an importer each, 7 staff),
@@ -79,14 +94,13 @@ is never issued twice or re-issued after a delete. Years are taken in
 A third one worth stating: the software suggests classifications, it does not
 decide them. `readyForDeclaration()` gates `DECLARATION_PREPARED` and
 `SUBMITTED_TO_CUSTOMS` on every line carrying `BROKER_APPROVED`, and only the
-`CUSTOMS_BROKER` role holds the `classification:approve` capability.
+`CUSTOMS_BROKER` role holds `classification:approve` and `declaration:submit` —
+not even `SUPER_ADMIN`, since administering the system is not holding the licence.
 
 ## Not built yet
 
 - All UI: public site, calculator, consumer dashboard, ops queues, broker review
 - API routes under `/api/v1/`
-- Remaining tests: pricing, RBAC/IDOR, state machine, revenue separation, and
-  database-backed tests for reference allocation and the concurrency guards
 - A production path for loading reference data (charge types, rates, HS codes,
   plans). Today only the seed creates it, and the seed will not run in production
 - Refunds. Cancelling a shipment voids invoices with nothing paid against them;
