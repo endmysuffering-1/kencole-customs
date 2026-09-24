@@ -43,12 +43,19 @@ export function requireReason(action: AuditAction): boolean {
   return REASON_REQUIRED.includes(action);
 }
 
-export async function recordAudit(entry: AuditEntry): Promise<void> {
+/**
+ * Pass the transaction the change itself is written in, and the change and its
+ * record commit together: a change that cannot be audited is not made.
+ */
+export async function recordAudit(
+  entry: AuditEntry,
+  client: Prisma.TransactionClient = db,
+): Promise<void> {
   if (requireReason(entry.action) && !entry.reason?.trim()) {
     throw new Error(`A reason is required to record "${entry.action}".`);
   }
   const meta = await clientMeta().catch(() => ({}) as { ip?: string; userAgent?: string });
-  await db.auditLog.create({
+  await client.auditLog.create({
     data: {
       actorId: entry.actorId ?? null,
       action: entry.action,

@@ -14,15 +14,9 @@ import { detectExceptions } from "@/lib/domain/exceptions";
 import { readyForDeclaration } from "@/lib/domain/classification";
 import { loadPricingRules, loadRateBook } from "./rate-book";
 import { nextQuoteReference, nextShipmentReference } from "./references";
+import { DomainError } from "./errors";
 import type { ShipmentInput } from "@/lib/validation/schemas";
 import { notify } from "@/lib/providers/notifications";
-
-export class DomainError extends Error {
-  constructor(message: string, readonly status = 400) {
-    super(message);
-    this.name = "DomainError";
-  }
-}
 
 export async function createShipment(input: {
   data: ShipmentInput;

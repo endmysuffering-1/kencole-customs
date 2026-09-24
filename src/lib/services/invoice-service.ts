@@ -1,7 +1,7 @@
 import { db } from "@/lib/db";
 import { recordAudit } from "@/lib/audit";
 import { cents, money } from "@/lib/money";
-import { DomainError } from "./shipment-service";
+import { DomainError } from "./errors";
 import { nextInvoiceReference } from "./references";
 
 /**

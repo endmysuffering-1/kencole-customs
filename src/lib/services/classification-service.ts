@@ -8,7 +8,7 @@ import {
   KEYWORD_RULES,
   type Suggestion,
 } from "@/lib/domain/classification";
-import { DomainError } from "./shipment-service";
+import { DomainError } from "./errors";
 
 export async function suggestForItem(itemId: string): Promise<Suggestion[]> {
   const item = await db.shipmentItem.findUnique({
@@ -104,28 +104,33 @@ export async function decideClassification(input: {
   const status =
     input.decision === "EXCEPTION" ? "EXCEPTION" : ("BROKER_APPROVED" as const);
 
-  const updated = await db.shipmentItem.update({
-    where: { id: input.itemId },
-    data: {
-      hsCodeId: code.id,
-      classificationStatus: status,
-      brokerNote: input.note ?? null,
-    },
-  });
+  return db.$transaction(async (tx) => {
+    const updated = await tx.shipmentItem.update({
+      where: { id: input.itemId },
+      data: {
+        hsCodeId: code.id,
+        classificationStatus: status,
+        brokerNote: input.note ?? null,
+      },
+    });
 
-  await recordAudit({
-    actorId: input.brokerId,
-    action: departs ? "classification.changed" : "classification.approved",
-    entityType: "ShipmentItem",
-    entityId: item.id,
-    oldValue: {
-      hsCode: item.hsCode?.code ?? null,
-      suggested: item.suggestedHsCode,
-      status: item.classificationStatus,
-    },
-    newValue: { hsCode: code.code, status },
-    reason: reason || undefined,
-  });
+    await recordAudit(
+      {
+        actorId: input.brokerId,
+        action: departs ? "classification.changed" : "classification.approved",
+        entityType: "ShipmentItem",
+        entityId: item.id,
+        oldValue: {
+          hsCode: item.hsCode?.code ?? null,
+          suggested: item.suggestedHsCode,
+          status: item.classificationStatus,
+        },
+        newValue: { hsCode: code.code, status },
+        reason: reason || undefined,
+      },
+      tx,
+    );
 
-  return updated;
+    return updated;
+  });
 }
