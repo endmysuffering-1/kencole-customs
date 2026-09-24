@@ -1,3 +1,4 @@
+import Image from "next/image";
 import Link from "next/link";
 import { Calculator } from "@/components/public/calculator";
 
@@ -64,8 +65,11 @@ export default function Home() {
       </section>
 
       <footer className="border-t border-ink/10">
-        <div className="mx-auto flex max-w-6xl flex-wrap justify-between gap-4 px-4 py-8 text-sm text-ink-500 sm:px-6">
-          <span>Kencole Customs Brokerage · Nassau, The Bahamas</span>
+        <div className="mx-auto flex max-w-6xl flex-wrap items-end justify-between gap-6 px-4 py-10 text-sm text-ink-500 sm:px-6">
+          <div>
+            <Image src="/brand/kencole-logo-ink.png" alt="Kencole Customs Brokerage" width={1308} height={542} className="h-20 w-auto" />
+            <p className="mt-3">Nassau, The Bahamas</p>
+          </div>
           <span>Estimates are not customs assessments.</span>
         </div>
       </footer>
