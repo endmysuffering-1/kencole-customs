@@ -5,22 +5,10 @@ import {
   statusForSuggestion,
   suggestFromHistory,
   suggestFromKeywords,
-  type KeywordRule,
+  KEYWORD_RULES,
   type Suggestion,
 } from "@/lib/domain/classification";
 import { DomainError } from "./shipment-service";
-
-/** Broad first-pass rules. The real precision comes from broker history below. */
-const KEYWORD_RULES: KeywordRule[] = [
-  { hsCode: "8471.30.00", description: "Portable computers", keywords: ["laptop", "notebook computer", "macbook"] },
-  { hsCode: "8517.13.00", description: "Smartphones", keywords: ["smartphone", "iphone", "mobile phone", "android phone"] },
-  { hsCode: "6109.10.00", description: "T-shirts, cotton, knitted", keywords: ["t-shirt", "tee shirt", "cotton shirt"] },
-  { hsCode: "9403.20.00", description: "Other metal furniture", keywords: ["shelving", "metal rack", "office furniture"] },
-  { hsCode: "8708.99.00", description: "Motor vehicle parts", keywords: ["brake pad", "car part", "vehicle part", "alternator"] },
-  { hsCode: "2208.40.00", description: "Rum and other spirits from cane", keywords: ["rum", "spirits"], alwaysReview: true },
-  { hsCode: "3004.90.00", description: "Medicaments, packaged", keywords: ["medicine", "pharmaceutical", "prescription"], alwaysReview: true },
-  { hsCode: "0303.00.00", description: "Fish, frozen", keywords: ["frozen fish", "seafood"], alwaysReview: true },
-];
 
 export async function suggestForItem(itemId: string): Promise<Suggestion[]> {
   const item = await db.shipmentItem.findUnique({
@@ -100,6 +88,19 @@ export async function decideClassification(input: {
   const code = await db.hsCode.findUnique({ where: { code: input.hsCode } });
   if (!code) throw new DomainError(`Tariff code ${input.hsCode} is not in the classification table.`);
 
+  // Approving a different code from the one on the table is a change, whatever
+  // the decision is called — otherwise APPROVE is a way round the reason.
+  const proposed = item.hsCode?.code ?? item.suggestedHsCode;
+  const departs =
+    input.decision !== "APPROVE" || (proposed != null && proposed !== code.code);
+  const reason = input.reason?.trim();
+
+  // Checked before anything is written. The reason is the broker's own words;
+  // this function never supplies one on their behalf.
+  if (departs && !reason) {
+    throw new DomainError("Give a reason when changing or flagging a classification.");
+  }
+
   const status =
     input.decision === "EXCEPTION" ? "EXCEPTION" : ("BROKER_APPROVED" as const);
 
@@ -114,12 +115,16 @@ export async function decideClassification(input: {
 
   await recordAudit({
     actorId: input.brokerId,
-    action: input.decision === "APPROVE" ? "classification.approved" : "classification.changed",
+    action: departs ? "classification.changed" : "classification.approved",
     entityType: "ShipmentItem",
     entityId: item.id,
-    oldValue: { hsCode: item.hsCode?.code ?? null, status: item.classificationStatus },
+    oldValue: {
+      hsCode: item.hsCode?.code ?? null,
+      suggested: item.suggestedHsCode,
+      status: item.classificationStatus,
+    },
     newValue: { hsCode: code.code, status },
-    reason: input.decision === "APPROVE" ? input.reason : (input.reason ?? "Broker override"),
+    reason: reason || undefined,
   });
 
   return updated;

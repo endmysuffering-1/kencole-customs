@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { env } from "@/lib/env";
 
 /**
@@ -61,8 +61,13 @@ class LocalStorage implements StorageProvider {
   private root = resolve(env.STORAGE_LOCAL_DIR ?? "./.storage");
 
   private path(key: string): string {
-    const full = resolve(join(this.root, key));
-    if (!full.startsWith(this.root)) throw new Error("Refusing to escape the storage root.");
+    const full = resolve(this.root, key);
+    // Not a prefix check: "../.storage-backup/x" resolves to a sibling directory
+    // whose path still starts with the root's, and would pass one.
+    const rel = relative(this.root, full);
+    if (rel === "" || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+      throw new Error("Refusing to escape the storage root.");
+    }
     return full;
   }
 

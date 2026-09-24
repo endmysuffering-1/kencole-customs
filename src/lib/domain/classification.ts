@@ -90,6 +90,18 @@ export interface KeywordRule {
   alwaysReview?: boolean;
 }
 
+/** Broad first-pass rules. The real precision comes from broker history below. */
+export const KEYWORD_RULES: KeywordRule[] = [
+  { hsCode: "8471.30.00", description: "Portable computers", keywords: ["laptop", "notebook computer", "macbook"] },
+  { hsCode: "8517.13.00", description: "Smartphones", keywords: ["smartphone", "iphone", "mobile phone", "android phone"] },
+  { hsCode: "6109.10.00", description: "T-shirts, cotton, knitted", keywords: ["t-shirt", "tee shirt", "cotton shirt"] },
+  { hsCode: "9403.20.00", description: "Other metal furniture", keywords: ["shelving", "metal rack", "office furniture"] },
+  { hsCode: "8708.99.00", description: "Motor vehicle parts", keywords: ["brake pad", "car part", "vehicle part", "alternator"] },
+  { hsCode: "2208.40.00", description: "Rum and other spirits from cane", keywords: ["rum", "spirits"], alwaysReview: true },
+  { hsCode: "3004.90.00", description: "Medicaments, packaged", keywords: ["medicine", "pharmaceutical", "prescription"], alwaysReview: true },
+  { hsCode: "0303.00.00", description: "Fish, frozen", keywords: ["frozen fish", "seafood"], alwaysReview: true },
+];
+
 export function suggestFromKeywords(
   itemDescription: string,
   rules: KeywordRule[],
