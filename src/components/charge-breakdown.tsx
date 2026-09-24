@@ -14,7 +14,7 @@ export interface BreakdownCharge {
  * The landed-cost breakdown, wherever it appears.
  *
  * Government money and Kencole money are two separate blocks with their own
- * subtotals and are never mixed in one list. Ochre marks money collected for the
+ * subtotals and are never mixed in one list. Violet marks money collected for the
  * Public Treasury and teal marks Kencole's fees; neither colour is used for
  * anything else. Any charge from an unconfirmed rate says so, in words.
  */
@@ -102,8 +102,8 @@ function Group({
   subtotalLabel: string;
   subtotal: Amount;
 }) {
-  const bar = tone === "government" ? "border-ochre" : "border-teal";
-  const text = tone === "government" ? "text-ochre" : "text-teal";
+  const bar = tone === "government" ? "border-treasury" : "border-teal";
+  const text = tone === "government" ? "text-treasury" : "text-teal";
   return (
     <section className={cn("mt-3 border-l-4 pl-4", bar)} aria-label={title}>
       <h3 className={cn("text-xs font-bold uppercase tracking-wider", text)}>{title}</h3>

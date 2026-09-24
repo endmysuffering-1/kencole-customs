@@ -9,9 +9,9 @@ import { api, ApiError } from "@/lib/client/api";
 import { homeFor } from "@/lib/auth/home";
 import type { Role } from "@/lib/auth/rbac";
 
-export function RegisterForm() {
+export function RegisterForm({ initialType = "personal" }: { initialType?: "personal" | "business" }) {
   const router = useRouter();
-  const [accountType, setAccountType] = useState<"personal" | "business">("personal");
+  const [accountType, setAccountType] = useState<"personal" | "business">(initialType);
   const [error, setError] = useState<string | null>(null);
   const [fields, setFields] = useState<Record<string, string[]>>({});
   const [busy, setBusy] = useState(false);

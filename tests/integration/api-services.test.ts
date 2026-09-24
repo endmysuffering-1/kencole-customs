@@ -3,7 +3,7 @@ import { db } from "@/lib/db";
 import { recordPaymentAndAdvance } from "@/lib/services/billing-flow";
 import { readDocument, uploadDocument } from "@/lib/services/document-service";
 import { storage } from "@/lib/providers/storage";
-import { getInvoice, getShipment, listInvoices, listShipments } from "@/lib/services/shipment-queries";
+import { findShipmentByReference, getInvoice, getShipment, listInvoices, listShipments } from "@/lib/services/shipment-queries";
 import {
   acceptQuote,
   openShipment,
@@ -336,5 +336,15 @@ describe("goods already in The Bahamas", () => {
     expect(view.milestones.at(-1)?.label).toBe("Collected");
     await db.shipment.update({ where: { id: s.id }, data: { deliveryRequested: true } });
     expect((await getShipment(p.consumerA, s.id)).statusLabel).toBe("Delivered");
+  });
+});
+
+describe("searching by shipment reference", () => {
+  it("finds your own shipment, whatever the case, and never someone else's", async () => {
+    const { p } = await world();
+    const mine = await openShipment({ principal: p.consumerA, data: shipmentInput() });
+    expect((await findShipmentByReference(p.consumerA, mine.reference.toLowerCase()))?.id).toBe(mine.id);
+    expect(await findShipmentByReference(p.consumerB, mine.reference)).toBeNull();
+    expect((await findShipmentByReference(p.ops, ` ${mine.reference} `))?.id).toBe(mine.id);
   });
 });

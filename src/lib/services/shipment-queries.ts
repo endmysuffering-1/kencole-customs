@@ -62,6 +62,12 @@ export async function listShipments(
       id: true, reference: true, status: true, description: true, importType: true, freightMode: true,
       goodsValue: true, currency: true, createdAt: true, updatedAt: true, heldAt: true, deliveryRequested: true,
       business: { select: { id: true, legalName: true, tradingName: true } },
+      items: { orderBy: { lineNumber: "asc" }, take: 1, select: { description: true } },
+      invoices: {
+        where: { status: { in: ["ISSUED", "PARTIALLY_PAID", "OVERDUE", "PAID"] } },
+        orderBy: { createdAt: "desc" }, take: 1,
+        select: { id: true, reference: true, status: true, total: true, amountPaid: true },
+      },
       _count: { select: { items: true } },
     },
   });
@@ -70,6 +76,17 @@ export async function listShipments(
     shipments: page.map((s) => ({ ...s, statusLabel: statusLabel(s.status, p, s.deliveryRequested) })),
     nextCursor: rows.length > take ? page[page.length - 1]!.id : null,
   };
+}
+
+/**
+ * A shipment reference typed into search, resolved within what the person may
+ * see. Anything outside their scope is simply not found.
+ */
+export async function findShipmentByReference(p: Principal, reference: string) {
+  return db.shipment.findFirst({
+    where: { AND: [shipmentScope(p), { reference: { equals: reference.trim(), mode: "insensitive" } }] },
+    select: { id: true },
+  });
 }
 
 const detailInclude = {

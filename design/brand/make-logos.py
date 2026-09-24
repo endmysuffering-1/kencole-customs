@@ -2,7 +2,7 @@
 # into single-colour transparent PNGs for public/brand/.
 #   pip install pillow numpy
 #   python design/brand/make-logos.py design/brand/kencole-logo-original.jpg public/brand
-# Gold is not used on the site: ochre is reserved for government charges.
+# Gold is not used on the site: it would read as another button colour (yellow and orange are for actions).
 import sys
 import numpy as np
 from PIL import Image

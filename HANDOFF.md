@@ -152,7 +152,7 @@ The rules the screens keep:
   own role or access, and only an administrator can change another
   administrator's. Granting the broker role shows a warning that it carries the
   licensed capabilities.
-- Ochre and teal appear only on money: badges, links and focus rings are ink.
+- Violet and teal appear only on money; yellow and orange only on buttons. Badges, links and focus rings are ink.
 - The operations queues are defined in `OPS_QUEUES`
   (`src/lib/services/ops-queries.ts`). HANDOFF named "ops queues" without
   listing them; the grouping by stage is a first cut to adjust with the team.
@@ -271,16 +271,34 @@ relevant to a freight cost base.
 
 ## Design direction
 
-Colour encodes who receives the money: ochre `#A9791C` for government charges,
-teal `#0E6E6B` for Kencole charges, never decoratively. Base is deep navy
-`#0C1B2A` on a pale `#EEF1F0`. One typeface (Archivo) with tabular figures on
-every money column.
+The layout follows the familiar online-shop pattern the owner asked for, in
+Kencole's own colours and with no borrowed branding:
 
-The logo is the gold Kencole script. On the site it is recoloured, white on
-navy in the header and navy on the pale footer, because its gold sits too
-close to the ochre that marks government charges. The supplied original and
-the script that makes every version are in `design/brand/`; the outputs are in
-`public/brand/`. The header uses a slightly thickened copy
-(`-small`), since the brush strokes go hairline below about 80px tall. The public hero is the landed-cost calculator itself rather
-than a headline — finding out what an import actually costs is the most
-characteristic moment in this product. Tokens are in `tailwind.config.ts`.
+- **Header:** a navy top bar with the logo, a search box, and "Hello, name" with
+  the account. A lighter strip underneath holds the menu. The search
+  (`/search`) looks up tariff codes and the person's own shipments. A shipment
+  reference jumps straight to that shipment, only if they may see it.
+- **Home page:** a banner that fades into the page, cards laid over its foot
+  (estimate, track, what you'll need, business accounts), then the calculator,
+  "How it works", and a dark footer with "Back to top" on every page.
+- **Your shipments:** laid out like an order list. There are tabs (All, Needs
+  you, In progress, Completed, Cancelled). Each shipment is a card with a
+  summary strip, its status in bold, and the next action on the right.
+
+Colour has two separate jobs, and they never overlap:
+
+- **Money** is coloured by who receives it: violet ("treasury", `#6B3FA0`) for
+  government charges, teal (`#0E6E6B`) for Kencole's fees. Neither is used for
+  anything else.
+- **Actions** use yellow ("action", `#FFD814`) for the main button on a page,
+  and orange ("buy", `#FFA41C`) for committing money: reviewing a quote, paying.
+
+Base is navy `#0C1B2A` on pale grey. One typeface (Archivo), with tabular
+figures on every money column.
+
+The logo is the gold Kencole script. On the site it is white on navy, since its
+gold would read as another button colour. The supplied original and the script
+that makes every version are in `design/brand/`, and the outputs in
+`public/brand/`. The header uses a slightly thickened copy (`-small`), since
+the brush strokes go hairline below about 80px tall. Tokens are in
+`tailwind.config.ts`.

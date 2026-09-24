@@ -45,7 +45,7 @@ export default async function ShipmentPage({ params }: { params: Promise<{ id: s
 
   return (
     <main className="mx-auto max-w-6xl px-4 py-10 sm:px-6">
-      <Link href="/dashboard" className="text-sm font-medium text-ink-500 hover:text-ink">← My shipments</Link>
+      <Link href="/dashboard" className="text-sm font-medium text-ink-500 hover:text-ink">← Your shipments</Link>
 
       <header className="mt-3 flex flex-wrap items-end justify-between gap-4">
         <div>
