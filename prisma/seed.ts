@@ -49,9 +49,18 @@ const NOW = new Date();
 const daysAgo = (n: number) => new Date(NOW.getTime() - n * 24 * 60 * 60 * 1000);
 
 /**
- * This seed creates a SUPER_ADMIN and 21 other accounts whose password is
- * committed above. It must never reach a database anyone else can log in to, so
- * it refuses production outright and a non-local database unless told otherwise.
+ * The password every seeded account gets. On a local database it defaults to
+ * DEV_PASSWORD, which is committed above. Anywhere else it must come from
+ * SEED_PASSWORD, so a hosted preview never has accounts anyone who has read the
+ * repository could sign in to.
+ */
+const SEED_PASSWORD = process.env.SEED_PASSWORD?.trim() || null;
+const PASSWORD = SEED_PASSWORD ?? DEV_PASSWORD;
+
+/**
+ * This seed creates a SUPER_ADMIN and 21 other accounts that share a password.
+ * It refuses production outright, and a non-local database unless told
+ * otherwise and given a password that is not in the repository.
  */
 function assertDevelopmentDatabase() {
   if (process.env.NODE_ENV === "production") {
@@ -68,6 +77,12 @@ function assertDevelopmentDatabase() {
     throw new Error(
       `Refusing to seed ${host}: it is not a local database. If it really is a disposable ` +
       "development database (a Docker service, say), rerun with SEED_ALLOW_NON_LOCAL=1.",
+    );
+  }
+  if (!local && (!SEED_PASSWORD || SEED_PASSWORD === DEV_PASSWORD || SEED_PASSWORD.length < 16)) {
+    throw new Error(
+      `Refusing to seed ${host} with the password committed to the repository. Set SEED_PASSWORD ` +
+      "to a password of at least 16 characters that only you know.",
     );
   }
 }
@@ -433,7 +448,7 @@ async function main() {
     return;
   }
 
-  const passwordHash = await hashPassword(DEV_PASSWORD);
+  const passwordHash = await hashPassword(PASSWORD);
   type Role = "SUPER_ADMIN" | "CUSTOMS_BROKER" | "OPERATIONS" | "DRIVER" | "BUSINESS_ADMIN" | "BUSINESS_USER" | "CONSUMER";
   const seedUser = (email: string, fullName: string, role: Role, phone: string) =>
     prisma.user.create({ data: { email, fullName, role, phone, passwordHash, emailVerified: new Date() } });
@@ -967,7 +982,11 @@ async function main() {
   ]);
 
   console.log("\nSeed complete.\n");
-  console.log(`Dev login password for every seeded account: ${DEV_PASSWORD}\n`);
+  console.log(
+    SEED_PASSWORD
+      ? "Every seeded account uses the password in SEED_PASSWORD.\n"
+      : `Dev login password for every seeded account: ${DEV_PASSWORD}\n`,
+  );
   console.log("Staff accounts:");
   for (const u of [admin, broker, broker2, ops, ops2, driverUser, driverUser2]) {
     console.log(`  ${u.role.padEnd(14)} ${u.email}`);

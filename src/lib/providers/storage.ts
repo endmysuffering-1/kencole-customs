@@ -2,11 +2,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { env } from "@/lib/env";
+import { db } from "@/lib/db";
 
 /**
  * Object storage behind an interface. The local provider is for development
- * only; production uses S3-compatible storage. Nothing outside this file knows
- * which one is in use.
+ * only. The database provider keeps files in Postgres, for hosts with no
+ * writable disk (a serverless preview); S3-compatible storage is the production
+ * target. Nothing outside this file knows which one is in use.
  */
 
 export interface StoredObject {
@@ -88,6 +90,31 @@ class LocalStorage implements StorageProvider {
   async signedUrl(key: string) { return `/api/v1/documents/download?key=${encodeURIComponent(key)}`; }
 }
 
+/** A missing object looks the same from every provider: an ENOENT error. */
+function notFound(key: string): Error {
+  return Object.assign(new Error(`No stored object at ${key}`), { code: "ENOENT" });
+}
+
+export class DatabaseStorage implements StorageProvider {
+  async put(input: { body: Buffer; contentType: string; fileName: string; prefix: string }) {
+    const key = `${input.prefix}/${randomUUID()}-${input.fileName.replace(/[^\w.\-]/g, "_")}`;
+    const checksum = createHash("sha256").update(input.body).digest("hex");
+    await db.storedObject.create({
+      data: { key, contentType: input.contentType, sizeBytes: input.body.byteLength, checksum, body: new Uint8Array(input.body) },
+    });
+    return { key, checksum, sizeBytes: input.body.byteLength };
+  }
+
+  async get(key: string) {
+    const row = await db.storedObject.findUnique({ where: { key }, select: { body: true } });
+    if (!row) throw notFound(key);
+    return Buffer.from(row.body);
+  }
+
+  async remove(key: string) { await db.storedObject.deleteMany({ where: { key } }); }
+  async signedUrl(key: string) { return `/api/v1/documents/download?key=${encodeURIComponent(key)}`; }
+}
+
 /**
  * S3 provider. Left unimplemented on purpose rather than stubbed with a fake
  * success: a silent no-op in a document store is worse than a loud failure.
@@ -102,7 +129,9 @@ class S3Storage implements StorageProvider {
 }
 
 export const storage: StorageProvider =
-  env.STORAGE_PROVIDER === "s3" ? new S3Storage() : new LocalStorage();
+  env.STORAGE_PROVIDER === "s3" ? new S3Storage()
+  : env.STORAGE_PROVIDER === "database" ? new DatabaseStorage()
+  : new LocalStorage();
 
 /** Virus scanning boundary. Swap for ClamAV or a vendor before production. */
 export interface ScanProvider { scan(body: Buffer): Promise<"CLEAN" | "INFECTED" | "SKIPPED"> }

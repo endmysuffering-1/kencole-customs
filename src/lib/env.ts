@@ -10,7 +10,7 @@ const schema = z.object({
   APP_URL: z.string().url().default("http://localhost:3000"),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 
-  STORAGE_PROVIDER: z.enum(["local", "s3"]).default("local"),
+  STORAGE_PROVIDER: z.enum(["local", "database", "s3"]).default("local"),
   STORAGE_LOCAL_DIR: z.string().default("./.storage"),
   S3_BUCKET: z.string().optional(),
   S3_REGION: z.string().optional(),

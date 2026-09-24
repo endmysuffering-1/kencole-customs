@@ -893,3 +893,14 @@ model ReferenceCounter {
   last      Int
   updatedAt DateTime @updatedAt
 }
+
+/// Document bytes, for deployments without object storage (STORAGE_PROVIDER=database).
+/// Fine for a preview or light use; move to S3-compatible storage for volume.
+model StoredObject {
+  key         String   @id
+  contentType String
+  sizeBytes   Int
+  checksum    String
+  body        Bytes
+  createdAt   DateTime @default(now())
+}
