@@ -207,6 +207,31 @@ stages).
 Postgres database. The screens were checked in Chromium against the seeded
 data, including one customer taken from sign-up to paid entirely through the UI.
 
+## Hosted preview
+
+A preview runs on Vercel (project `kencole-customs-preview`) against Supabase
+(project `kencole-customs-preview`, US East). It holds the demo data only.
+
+- **Database.** The app connects as its own role, `kencole_app`, which owns a
+  private `kencole` schema. That schema is not exposed through Supabase's data
+  API, and `anon` / `authenticated` have no rights on it. Connections go through
+  the Supavisor pooler (`aws-0-us-east-1`): port 6543 in transaction mode for
+  the app, port 5432 in session mode for migrations.
+- **Build.** `scripts/vercel-build.sh` runs `prisma migrate deploy`, seeds once
+  if `SEED_PREVIEW=1` (it was, for the first deploy only; it is now `0`), then
+  builds. A schema change reaches the preview by deploying it.
+- **Files.** `STORAGE_PROVIDER=database`: documents live in the `StoredObject`
+  table, because a serverless function has no disk that persists. Vercel caps a
+  request body at 4.5 MB, so larger uploads fail on the preview.
+- **Accounts.** Seeded with a password that is not in the repository. It is not
+  stored in Vercel either; ask whoever set the preview up.
+- **Environment variables** (in Vercel, secrets marked sensitive):
+  `DATABASE_URL`, `MIGRATE_DATABASE_URL`, `SESSION_SECRET`,
+  `STORAGE_PROVIDER=database`, `EMAIL_PROVIDER=console`, `SEED_PREVIEW=0`.
+- **Access.** Vercel Authentication is on, so only members of the Vercel team
+  can open it. Turn it off under Settings → Deployment Protection to share it.
+  Supabase pauses free projects after a week without activity.
+
 ## Bahamas Customs items needing confirmation before production
 
 Nothing in this codebase asserts a Bahamian rate. Before seeding real values,
