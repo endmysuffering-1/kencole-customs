@@ -40,6 +40,8 @@ export interface RateRuleSnapshot {
   confirmed: boolean;
 }
 
+export type ChargeLevel = "LINE" | "SHIPMENT";
+
 export interface ChargeTypeSnapshot {
   code: string;
   label: string;
@@ -48,6 +50,15 @@ export interface ChargeTypeSnapshot {
   sortOrder: number;
   /** Charge codes folded into the base for PERCENT_OF_DUTIABLE_TOTAL. */
   baseIncludes: string[];
+  /**
+   * LINE (the default): computed on every line against that line's own tariff
+   * heading — duty and VAT work this way.
+   * SHIPMENT: computed once for the whole entry against the general rule, so a
+   * minimum or maximum bounds the entry rather than each line. Heading- and
+   * chapter-specific rules are not consulted for a shipment-level charge.
+   * Which charges are which is configuration, not something this engine decides.
+   */
+  level?: ChargeLevel;
   rules: RateRuleSnapshot[];
 }
 
@@ -179,37 +190,82 @@ export function calculateLandedCost(
 
   const charges: ChargeLine[] = [];
   const unverified = new Set<string>();
-  const unclassified: number[] = [];
+  const unclassified = lines.filter((l) => !l.hsCode).map((l) => l.lineNumber);
+  const lineCifs = lines.map((_, index) => money(lineCustomsValues[index] ?? 0));
 
-  lines.forEach((line, index) => {
-    const lineCif = money(lineCustomsValues[index] ?? 0);
-    const lineGoods = money(line.lineValue);
-    if (!line.hsCode) unclassified.push(line.lineNumber);
+  // Every government charge computed so far, as an amount per line, so a charge
+  // declaring baseIncludes: ["IMPORT_DUTY"] can build on the duty already worked
+  // out. A shipment-level charge is spread back across the lines by customs value
+  // so that a later per-line charge can still include it in its base.
+  const accumulated = lines.map(() => new Map<string, Money>());
+  const included = (type: ChargeTypeSnapshot, index: number) =>
+    sum(type.baseIncludes.map((code) => accumulated[index]!.get(code) ?? new Decimal(0)));
 
-    // Charges accumulated on this line so far, keyed by code, so that a charge
-    // declaring baseIncludes: ["IMPORT_DUTY"] can build on the duty just computed.
-    const accumulated = new Map<string, Money>();
-
-    for (const type of governmentTypes) {
-      const rule = resolveRule(type, line.hsCode, asOf);
+  // Charge types in sortOrder, so a charge's base only ever includes charges
+  // ordered before it.
+  for (const type of governmentTypes) {
+    if (type.level === "SHIPMENT") {
+      const rule = resolveRule(type, null, asOf);
       if (!rule) continue;
 
       const rate = money(rule.rate);
       let base: Money;
+      switch (type.basis) {
+        case "PERCENT_OF_CUSTOMS_VALUE":
+          base = customsValue;
+          break;
+        case "PERCENT_OF_GOODS_VALUE":
+          base = goodsValue;
+          break;
+        case "PERCENT_OF_DUTIABLE_TOTAL":
+          base = cents(customsValue.plus(sum(lines.map((_, index) => included(type, index)))));
+          break;
+        case "PER_UNIT_WEIGHT":
+          base = money(shipment.grossWeightKg ?? 0);
+          break;
+        case "PER_LINE":
+          base = new Decimal(lines.length);
+          break;
+        case "FLAT":
+          base = new Decimal(1);
+          break;
+      }
 
+      const raw = type.basis === "FLAT" ? rate : base.times(rate);
+      const amount = clamp(cents(raw), rule.minAmount, rule.maxAmount);
+
+      allocate(amount, lineCifs).forEach((share, index) => accumulated[index]!.set(type.code, share));
+      if (!rule.confirmed) unverified.add(type.code);
+
+      charges.push({
+        chargeCode: type.code,
+        label: type.label,
+        payee: "GOVERNMENT",
+        basisAmount: base.toFixed(2),
+        rateApplied: rate.toString(),
+        amount: amount.toFixed(2),
+        rateRuleId: rule.id,
+        unverified: !rule.confirmed,
+      });
+      continue;
+    }
+
+    lines.forEach((line, index) => {
+      const rule = resolveRule(type, line.hsCode, asOf);
+      if (!rule) return;
+
+      const lineCif = lineCifs[index]!;
+      const rate = money(rule.rate);
+      let base: Money;
       switch (type.basis) {
         case "PERCENT_OF_CUSTOMS_VALUE":
           base = lineCif;
           break;
         case "PERCENT_OF_GOODS_VALUE":
-          base = lineGoods;
+          base = money(line.lineValue);
           break;
         case "PERCENT_OF_DUTIABLE_TOTAL":
-          base = cents(
-            lineCif.plus(
-              sum(type.baseIncludes.map((code) => accumulated.get(code) ?? new Decimal(0))),
-            ),
-          );
+          base = cents(lineCif.plus(included(type, index)));
           break;
         case "PER_UNIT_WEIGHT":
           base = money(line.weightKg ?? 0);
@@ -224,7 +280,7 @@ export function calculateLandedCost(
         type.basis === "FLAT" || type.basis === "PER_LINE" ? rate : base.times(rate);
       const amount = clamp(cents(raw), rule.minAmount, rule.maxAmount);
 
-      accumulated.set(type.code, amount);
+      accumulated[index]!.set(type.code, amount);
       if (!rule.confirmed) unverified.add(type.code);
 
       charges.push({
@@ -238,8 +294,8 @@ export function calculateLandedCost(
         rateRuleId: rule.id,
         unverified: !rule.confirmed,
       });
-    }
-  });
+    });
+  }
 
   charges.push(...brokerCharges);
 

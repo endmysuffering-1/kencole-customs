@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { calculateLandedCost, resolveRule, summariseCharges } from "@/lib/domain/landed-cost";
+import {
+  calculateLandedCost,
+  resolveRule,
+  summariseCharges,
+  type ChargeLevel,
+  type RateBook,
+} from "@/lib/domain/landed-cost";
 import { testRateBook } from "./fixtures";
 
 const book = testRateBook();
@@ -142,6 +148,73 @@ describe("landed cost", () => {
     const expected = 1200 + Number(r.governmentTotal) + Number(r.brokerTotal);
     expect(Number(r.grandTotal)).toBeCloseTo(expected, 2);
     expect(r.brokerTotal).toBe("24.00");
+  });
+});
+
+describe("shipment-level charges", () => {
+  function bookWithEntryFee(level: ChargeLevel, vatIncludesFee = false): RateBook {
+    const base = testRateBook();
+    return {
+      ...base,
+      charges: [
+        ...base.charges.map((c) =>
+          c.code === "VAT" && vatIncludesFee
+            ? { ...c, baseIncludes: [...c.baseIncludes, "PROCESSING_FEE"] }
+            : c,
+        ),
+        {
+          code: "PROCESSING_FEE", label: "Processing fee", payee: "GOVERNMENT",
+          basis: "PERCENT_OF_CUSTOMS_VALUE", sortOrder: 25, baseIncludes: [], level,
+          rules: [{ id: "fee", rate: "0.01", minAmount: "15", maxAmount: "300", confirmed: false, effectiveFrom: new Date("2020-01-01") }],
+        },
+      ],
+    };
+  }
+
+  const twoLines = {
+    goodsValue: "1000", freightCost: "0", insuranceCost: "0",
+    lines: [
+      { lineNumber: 1, description: "Laptop", quantity: 1, lineValue: "800", hsCode: "8471.30.00" },
+      { lineNumber: 2, description: "T-shirt", quantity: 1, lineValue: "200", hsCode: "6109.10.00" },
+    ],
+  };
+  const fees = (r: ReturnType<typeof calculateLandedCost>) =>
+    r.charges.filter((c) => c.chargeCode === "PROCESSING_FEE");
+
+  it("applies a per-entry minimum once, not once per line", () => {
+    const perEntry = fees(calculateLandedCost(twoLines, bookWithEntryFee("SHIPMENT")));
+    expect(perEntry).toHaveLength(1);
+    expect(perEntry[0]!.lineNumber).toBeUndefined();
+    expect(perEntry[0]!.amount).toBe("15.00"); // 1% of 1000 is 10, lifted to the 15 minimum
+
+    // The same rule configured per line charges the minimum on each line.
+    const perLine = fees(calculateLandedCost(twoLines, bookWithEntryFee("LINE")));
+    expect(perLine.map((c) => c.amount)).toEqual(["15.00", "15.00"]);
+  });
+
+  it("caps a per-entry charge at its maximum for the whole entry", () => {
+    const r = calculateLandedCost(
+      { goodsValue: "50000", freightCost: "0", insuranceCost: "0", lines: [] },
+      bookWithEntryFee("SHIPMENT"),
+    );
+    expect(fees(r).map((c) => c.amount)).toEqual(["300.00"]);
+  });
+
+  it("lets a later per-line charge build on a per-entry charge", () => {
+    const r = calculateLandedCost(
+      {
+        goodsValue: "1000", freightCost: "0", insuranceCost: "0",
+        lines: [
+          { lineNumber: 1, description: "A", quantity: 1, lineValue: "600", hsCode: "6109.10.00" },
+          { lineNumber: 2, description: "B", quantity: 1, lineValue: "400", hsCode: "6109.10.00" },
+        ],
+      },
+      bookWithEntryFee("SHIPMENT", true),
+    );
+    const vat = r.charges.filter((c) => c.chargeCode === "VAT").reduce((a, c) => a + Number(c.amount), 0);
+    // 10% of (1000 CIF + 250 duty + 10 levy + 15 fee)
+    expect(vat.toFixed(2)).toBe("127.50");
+    expect(r.unverifiedCharges).toContain("PROCESSING_FEE");
   });
 });
 

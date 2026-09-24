@@ -197,12 +197,21 @@ enum ChargeBasis {
   PER_UNIT_WEIGHT
 }
 
+/// LINE: computed on each line against its own tariff heading (duty, VAT).
+/// SHIPMENT: computed once per entry, so a minimum or maximum bounds the entry
+/// rather than every line. Which charges are which is configuration.
+enum ChargeLevel {
+  LINE
+  SHIPMENT
+}
+
 model ChargeType {
   id          String      @id @default(cuid())
   code        String      @unique // "IMPORT_DUTY", "VAT", "ENV_LEVY", "PROCESSING_FEE", "BROKERAGE"
   label       String
   payee       Payee
   basis       ChargeBasis
+  level       ChargeLevel @default(LINE)
   sortOrder   Int         @default(100)
   /// Charge codes this charge's base includes, for PERCENT_OF_DUTIABLE_TOTAL.
   baseIncludes String[]   @default([])

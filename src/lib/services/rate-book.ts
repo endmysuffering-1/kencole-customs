@@ -15,6 +15,7 @@ export async function loadRateBook(asOf = new Date()): Promise<RateBook> {
     label: t.label,
     payee: t.payee,
     basis: t.basis,
+    level: t.level,
     sortOrder: t.sortOrder,
     baseIncludes: t.baseIncludes,
     rules: t.rateRules.map((r) => ({
