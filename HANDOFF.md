@@ -259,6 +259,13 @@ relevant to a freight cost base.
 Colour encodes who receives the money: ochre `#A9791C` for government charges,
 teal `#0E6E6B` for Kencole charges, never decoratively. Base is deep navy
 `#0C1B2A` on a pale `#EEF1F0`. One typeface (Archivo) with tabular figures on
-every money column. The public hero is the landed-cost calculator itself rather
+every money column.
+
+The logo is the gold Kencole script. On the site it is recoloured, white on
+navy in the header and navy on the pale footer, because its gold sits too
+close to the ochre that marks government charges. The supplied original and
+the script that makes every version are in `design/brand/`; the outputs are in
+`public/brand/`. The header uses a slightly thickened copy
+(`-small`), since the brush strokes go hairline below about 80px tall. The public hero is the landed-cost calculator itself rather
 than a headline — finding out what an import actually costs is the most
 characteristic moment in this product. Tokens are in `tailwind.config.ts`.

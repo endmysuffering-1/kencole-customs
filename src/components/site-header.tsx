@@ -1,3 +1,4 @@
+import Image from "next/image";
 import Link from "next/link";
 import { getSessionUser } from "@/lib/auth/session";
 import { can } from "@/lib/auth/rbac";
@@ -20,10 +21,12 @@ export async function SiteHeader() {
   return (
     <header className="bg-ink text-white">
       {/* On a phone the nav drops to its own scrollable row under the logo. */}
-      <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-x-8 gap-y-2 px-4 py-3 sm:px-6">
-        <Link href="/" className="flex items-baseline gap-2">
-          <span className="text-lg font-bold tracking-tight">Kencole</span>
-          <span className="hidden text-xs font-medium uppercase tracking-widest text-white/60 sm:inline">
+      <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-x-8 gap-y-2 px-4 py-2.5 sm:px-6">
+        <Link href="/" className="flex items-end gap-3" aria-label="Kencole Customs Brokerage, home">
+          {/* The brand script, recoloured white: the gold original is too close to
+              the ochre that marks government charges. See design/brand/. */}
+          <Image src="/brand/kencole-wordmark-white-small.png" alt="" width={1308} height={489} priority className="h-12 w-auto" />
+          <span className="mb-1.5 hidden text-[0.65rem] font-medium uppercase tracking-[0.3em] text-white/60 sm:inline">
             Customs Brokerage
           </span>
         </Link>
