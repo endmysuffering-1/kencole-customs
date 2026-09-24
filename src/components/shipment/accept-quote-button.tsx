@@ -14,6 +14,7 @@ export function AcceptQuoteButton({ quoteId }: { quoteId: string }) {
     <div className="space-y-3">
       <FormError message={error} />
       <Button
+        variant="buy"
         disabled={busy}
         onClick={async () => {
           setBusy(true);

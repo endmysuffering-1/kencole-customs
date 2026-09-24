@@ -17,9 +17,10 @@ export function SignOutButton() {
         router.push("/");
         router.refresh();
       }}
-      className="rounded-md px-3 py-1.5 text-sm font-medium text-white/80 hover:bg-white/10 hover:text-white"
+      className="rounded-sm px-2 py-1 leading-tight text-left ring-white/70 hover:ring-1"
     >
-      Sign out
+      <span className="hidden text-xs text-white/75 sm:block">Done?</span>
+      <span className="block text-sm font-bold">Sign out</span>
     </button>
   );
 }

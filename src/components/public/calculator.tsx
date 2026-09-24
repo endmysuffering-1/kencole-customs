@@ -26,14 +26,14 @@ type Code = { code: string; description: string };
  * prices from the rate table; nothing is calculated here. The result is an
  * estimate: customs assesses the real amount.
  */
-export function Calculator() {
+export function Calculator({ initialCode }: { initialCode?: Code | null }) {
   const [goods, setGoods] = useState("500");
   const [freight, setFreight] = useState("60");
   const [insurance, setInsurance] = useState("");
   const [importType, setImportType] = useState<"PERSONAL" | "COMMERCIAL">("PERSONAL");
   const [delivery, setDelivery] = useState(false);
-  const [what, setWhat] = useState("");
-  const [picked, setPicked] = useState<Code | null>(null);
+  const [what, setWhat] = useState(initialCode ? `${initialCode.code} · ${initialCode.description}` : "");
+  const [picked, setPicked] = useState<Code | null>(initialCode ?? null);
   const [matches, setMatches] = useState<Code[]>([]);
   const [estimate, setEstimate] = useState<Estimate | null>(null);
   const [error, setError] = useState<string | null>(null);

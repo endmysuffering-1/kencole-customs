@@ -1,9 +1,13 @@
 import type { Config } from "tailwindcss";
 
 /**
- * Palette rationale (see docs/ARCHITECTURE.md § Design):
- * Colour encodes *who receives the money*. Ochre = government charges,
- * teal = Kencole charges. Never use these two hues decoratively.
+ * Palette rationale:
+ * - Money is colour-coded by who receives it: violet ("treasury") for government
+ *   charges, teal for Kencole's fees. Neither hue is used for anything else.
+ * - Actions borrow the familiar online-shop pattern: yellow ("action") for the
+ *   main button on a page, orange ("buy") for committing money (accept, pay).
+ *   Yellow and orange are never used for money, so the two systems never meet.
+ * - Navy ("ink") for the header and text on a pale grey page.
  */
 const config: Config = {
   content: ["./src/**/*.{ts,tsx}"],
@@ -13,7 +17,9 @@ const config: Config = {
         ink: { DEFAULT: "#0C1B2A", 700: "#16324B", 500: "#3D5A73", 300: "#8FA3B4" },
         paper: { DEFAULT: "#EEF1F0", card: "#FFFFFF", sunk: "#E2E7E6" },
         teal: { DEFAULT: "#0E6E6B", 600: "#0A5654", 100: "#D6E8E7" },
-        ochre: { DEFAULT: "#A9791C", 100: "#F2E7CE" },
+        treasury: { DEFAULT: "#6B3FA0", 100: "#EFE8F7" },
+        action: { DEFAULT: "#FFD814", hover: "#F7CA00", edge: "#FCD200" },
+        buy: { DEFAULT: "#FFA41C", hover: "#FA8900", edge: "#FF8F00" },
         alert: { DEFAULT: "#9B2C2C", 100: "#F6DEDE" },
       },
       fontFamily: { sans: ["var(--font-archivo)", "system-ui", "sans-serif"] },
