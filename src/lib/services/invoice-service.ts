@@ -15,47 +15,65 @@ import { nextInvoiceReference } from "./references";
  */
 
 export async function issueInvoiceForQuote(quoteId: string, actorId: string) {
-  const quote = await db.quote.findUnique({
-    where: { id: quoteId },
-    include: {
-      charges: { include: { chargeType: true } },
-      shipment: { include: { owner: true, business: true } },
-    },
-  });
-  if (!quote) throw new DomainError("Quote not found.", 404);
-  if (quote.status === "SUPERSEDED" || quote.status === "EXPIRED") {
-    throw new DomainError("That quote is no longer current. Issue a fresh one.");
-  }
+  const invoice = await db.$transaction(async (tx) => {
+    // One live invoice per quote. The row lock makes a double-submit wait here,
+    // then find the first request's invoice and be refused, instead of both
+    // requests billing the customer.
+    await tx.$queryRaw`SELECT id FROM "Quote" WHERE id = ${quoteId} FOR UPDATE`;
 
-  const shipment = quote.shipment;
-  const reference = await nextInvoiceReference(shipment.id, shipment.reference);
+    const quote = await tx.quote.findUnique({
+      where: { id: quoteId },
+      include: {
+        charges: { include: { chargeType: true } },
+        shipment: { include: { owner: true, business: true } },
+      },
+    });
+    if (!quote) throw new DomainError("Quote not found.", 404);
+    if (quote.status === "SUPERSEDED" || quote.status === "EXPIRED") {
+      throw new DomainError("That quote is no longer current. Issue a fresh one.");
+    }
+    if (quote.shipment.status === "CANCELLED") {
+      throw new DomainError("That shipment has been cancelled.");
+    }
 
-  const lines = quote.charges
-    .sort((a, b) => a.chargeType.sortOrder - b.chargeType.sortOrder)
-    .map((c, index) => ({
-      description: c.chargeType.label,
-      payee: c.payee,
-      amount: c.amount.toString(),
-      chargeCode: c.chargeType.code,
-      sortOrder: index,
-    }));
+    const existing = await tx.invoice.findFirst({
+      where: { quoteId, status: { not: "VOIDED" } },
+      select: { reference: true },
+    });
+    if (existing) {
+      throw new DomainError(`This quote has already been invoiced as ${existing.reference}.`, 409);
+    }
 
-  const invoice = await db.invoice.create({
-    data: {
-      reference,
-      shipmentId: shipment.id,
-      quoteId: quote.id,
-      businessId: shipment.businessId,
-      billToEmail: shipment.business?.billingEmail ?? shipment.owner.email,
-      status: "ISSUED",
-      governmentTotal: quote.governmentTotal,
-      brokerTotal: quote.brokerTotal,
-      total: cents(money(quote.governmentTotal).plus(money(quote.brokerTotal))).toFixed(2),
-      issuedAt: new Date(),
-      dueAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 7),
-      lines: { create: lines },
-    },
-    include: { lines: true },
+    const shipment = quote.shipment;
+    const reference = await nextInvoiceReference(shipment.id, shipment.reference, tx);
+
+    const lines = quote.charges
+      .sort((a, b) => a.chargeType.sortOrder - b.chargeType.sortOrder)
+      .map((c, index) => ({
+        description: c.chargeType.label,
+        payee: c.payee,
+        amount: c.amount.toString(),
+        chargeCode: c.chargeType.code,
+        sortOrder: index,
+      }));
+
+    return tx.invoice.create({
+      data: {
+        reference,
+        shipmentId: shipment.id,
+        quoteId: quote.id,
+        businessId: shipment.businessId,
+        billToEmail: shipment.business?.billingEmail ?? shipment.owner.email,
+        status: "ISSUED",
+        governmentTotal: quote.governmentTotal,
+        brokerTotal: quote.brokerTotal,
+        total: cents(money(quote.governmentTotal).plus(money(quote.brokerTotal))).toFixed(2),
+        issuedAt: new Date(),
+        dueAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 7),
+        lines: { create: lines },
+      },
+      include: { lines: true },
+    });
   });
 
   await recordAudit({
@@ -64,7 +82,7 @@ export async function issueInvoiceForQuote(quoteId: string, actorId: string) {
     entityType: "Invoice",
     entityId: invoice.id,
     newValue: {
-      reference,
+      reference: invoice.reference,
       governmentTotal: invoice.governmentTotal.toString(),
       brokerTotal: invoice.brokerTotal.toString(),
     },
@@ -80,23 +98,25 @@ export async function recordPayment(input: {
   providerRef?: string;
   actorId: string;
 }) {
-  const invoice = await db.invoice.findUnique({ where: { id: input.invoiceId } });
-  if (!invoice) throw new DomainError("Invoice not found.", 404);
-  if (invoice.status === "VOIDED") throw new DomainError("That invoice has been voided.");
-
   const amount = cents(input.amount);
   if (amount.lessThanOrEqualTo(0)) throw new DomainError("Enter a payment amount above zero.");
 
-  const paid = cents(money(invoice.amountPaid).plus(amount));
-  const total = money(invoice.total);
-  const status = paid.greaterThanOrEqualTo(total)
-    ? "PAID"
-    : paid.greaterThan(0)
-      ? "PARTIALLY_PAID"
-      : invoice.status;
+  const { payment, before, after } = await db.$transaction(async (tx) => {
+    // Payments against one invoice apply one after another. Without the lock two
+    // concurrent payments both read the same amountPaid and the second write
+    // discards the first, leaving a fully paid invoice marked PARTIALLY_PAID.
+    await tx.$queryRaw`SELECT id FROM "Invoice" WHERE id = ${input.invoiceId} FOR UPDATE`;
 
-  const [payment] = await db.$transaction([
-    db.payment.create({
+    const invoice = await tx.invoice.findUnique({ where: { id: input.invoiceId } });
+    if (!invoice) throw new DomainError("Invoice not found.", 404);
+    if (invoice.status === "VOIDED") throw new DomainError("That invoice has been voided.");
+
+    const paid = cents(money(invoice.amountPaid).plus(amount));
+    const status = paid.greaterThanOrEqualTo(money(invoice.total))
+      ? ("PAID" as const)
+      : ("PARTIALLY_PAID" as const);
+
+    const created = await tx.payment.create({
       data: {
         invoiceId: invoice.id,
         provider: input.provider,
@@ -106,20 +126,26 @@ export async function recordPayment(input: {
         receivedAt: new Date(),
         recordedBy: input.actorId,
       },
-    }),
-    db.invoice.update({
+    });
+    await tx.invoice.update({
       where: { id: invoice.id },
       data: { amountPaid: paid.toFixed(2), status },
-    }),
-  ]);
+    });
+
+    return {
+      payment: created,
+      before: { amountPaid: invoice.amountPaid.toString(), status: invoice.status },
+      after: { amountPaid: paid.toFixed(2), status },
+    };
+  });
 
   await recordAudit({
     actorId: input.actorId,
     action: "payment.recorded",
     entityType: "Invoice",
-    entityId: invoice.id,
-    oldValue: { amountPaid: invoice.amountPaid.toString(), status: invoice.status },
-    newValue: { amountPaid: paid.toFixed(2), status },
+    entityId: input.invoiceId,
+    oldValue: before,
+    newValue: after,
   });
 
   return payment;
@@ -127,11 +153,12 @@ export async function recordPayment(input: {
 
 /**
  * Revenue for a period. Deliberately the only function that produces a revenue
- * figure, and it reads brokerTotal exclusively.
+ * figure, and it reads brokerTotal exclusively. Draft, voided and refunded
+ * invoices are excluded: none of them represents fees Kencole has kept.
  */
 export async function revenueBetween(from: Date, to: Date) {
   const invoices = await db.invoice.findMany({
-    where: { issuedAt: { gte: from, lte: to }, status: { notIn: ["DRAFT", "VOIDED"] } },
+    where: { issuedAt: { gte: from, lte: to }, status: { notIn: ["DRAFT", "VOIDED", "REFUNDED"] } },
     select: { brokerTotal: true, governmentTotal: true, amountPaid: true, total: true },
   });
 

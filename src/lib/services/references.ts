@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 
 /**
@@ -10,15 +11,20 @@ import { db } from "@/lib/db";
  *
  * That rules out counting existing rows. `count() + 1` hands the same number to
  * two concurrent callers, and walks backwards the moment anything is deleted.
+ *
+ * Pass the caller's transaction client when allocating inside one: the counter
+ * then advances only if the record carrying the number is actually written.
  */
+
+type Client = Prisma.TransactionClient;
 
 /**
  * One statement, so the read and the write cannot be separated by another
  * caller. Prisma's upsert would usually compile to the same thing, but "usually"
  * is the entire failure mode being fixed here, so the SQL is written out.
  */
-async function nextInSequence(key: string): Promise<number> {
-  const rows = await db.$queryRaw<{ last: number }[]>`
+async function nextInSequence(key: string, client: Client): Promise<number> {
+  const rows = await client.$queryRaw<{ last: number }[]>`
     INSERT INTO "ReferenceCounter" ("key", "last", "updatedAt")
     VALUES (${key}, 1, NOW())
     ON CONFLICT ("key")
@@ -30,21 +36,41 @@ async function nextInSequence(key: string): Promise<number> {
   return last;
 }
 
+const NASSAU_YEAR = new Intl.DateTimeFormat("en-US", { timeZone: "America/Nassau", year: "numeric" });
+
+/** The year as Kencole's office sees it. In UTC, a shipment opened on the evening
+ *  of 31 December in Nassau would already carry next year's number. */
+export function referenceYear(at: Date): number {
+  return Number(NASSAU_YEAR.format(at));
+}
+
 /** KCB-2026-000417. Sequential within the year so a customer can read it out. */
-export async function nextShipmentReference(prefix = "KCB", now = new Date()): Promise<string> {
-  const year = now.getUTCFullYear();
-  const n = await nextInSequence(`shipment:${prefix}:${year}`);
+export async function nextShipmentReference(
+  prefix = "KCB",
+  at = new Date(),
+  client: Client = db,
+): Promise<string> {
+  const year = referenceYear(at);
+  const n = await nextInSequence(`shipment:${prefix}:${year}`, client);
   return `${prefix}-${year}-${String(n).padStart(6, "0")}`;
 }
 
 /** Q-KCB-2026-000417-2. Numbered per shipment, so a re-quote is visibly the second. */
-export async function nextQuoteReference(shipmentId: string, shipmentReference: string): Promise<string> {
-  const n = await nextInSequence(`quote:${shipmentId}`);
+export async function nextQuoteReference(
+  shipmentId: string,
+  shipmentReference: string,
+  client: Client = db,
+): Promise<string> {
+  const n = await nextInSequence(`quote:${shipmentId}`, client);
   return `Q-${shipmentReference}-${n}`;
 }
 
 /** INV-KCB-2026-000417-1. */
-export async function nextInvoiceReference(shipmentId: string, shipmentReference: string): Promise<string> {
-  const n = await nextInSequence(`invoice:${shipmentId}`);
+export async function nextInvoiceReference(
+  shipmentId: string,
+  shipmentReference: string,
+  client: Client = db,
+): Promise<string> {
+  const n = await nextInSequence(`invoice:${shipmentId}`, client);
   return `INV-${shipmentReference}-${n}`;
 }

@@ -103,6 +103,7 @@ export async function estimateShipment(shipmentId: string): Promise<LandedCostRe
     include: {
       items: { include: { hsCode: true }, orderBy: { lineNumber: "asc" } },
       business: { include: { subscription: { include: { plan: true } } } },
+      owner: { include: { consumerProfile: { include: { membership: { include: { plan: true } } } } } },
     },
   });
   if (!shipment) throw new DomainError("Shipment not found.", 404);
@@ -112,7 +113,14 @@ export async function estimateShipment(shipmentId: string): Promise<LandedCostRe
     loadPricingRules(shipment.businessId),
   ]);
 
-  const plan = shipment.business?.subscription?.plan;
+  // A business shipment is priced on the business's plan, a personal one on the
+  // importer's own membership. A lapsed or cancelled subscription earns nothing.
+  const subscription = shipment.businessId
+    ? shipment.business?.subscription
+    : shipment.owner.consumerProfile?.membership;
+  const live =
+    subscription?.status === "ACTIVE" && (!subscription.endsAt || subscription.endsAt > new Date());
+  const plan = live ? subscription.plan : null;
 
   const customsValue = cents(
     money(shipment.goodsValue).plus(money(shipment.freightCost)).plus(money(shipment.insuranceCost)),
@@ -221,7 +229,9 @@ export async function transitionShipment(input: {
   if (!shipment) throw new DomainError("Shipment not found.", 404);
 
   const invoiceSettled = shipment.invoices.some(
-    (i) => i.status === "PAID" || money(i.amountPaid).greaterThanOrEqualTo(money(i.total)),
+    (i) =>
+      i.status !== "VOIDED" && i.status !== "REFUNDED" &&
+      (i.status === "PAID" || money(i.amountPaid).greaterThanOrEqualTo(money(i.total))),
   );
 
   const verdict = canTransition(shipment.status, input.to, {
@@ -231,11 +241,16 @@ export async function transitionShipment(input: {
   });
   if (!verdict.ok) throw new DomainError(verdict.reason ?? "That status change is not allowed.");
 
-  const updated = await db.$transaction(async (tx) => {
-    const next = await tx.shipment.update({
-      where: { id: shipment.id },
+  const { updated, voided } = await db.$transaction(async (tx) => {
+    // Conditional on the status the guards were checked against, so two
+    // concurrent changes cannot both apply from the same starting point.
+    const moved = await tx.shipment.updateMany({
+      where: { id: shipment.id, status: shipment.status },
       data: { status: input.to },
     });
+    if (moved.count === 0) {
+      throw new DomainError("The shipment changed while you were working on it. Reload and try again.", 409);
+    }
     await tx.shipmentStatusHistory.create({
       data: {
         shipmentId: shipment.id,
@@ -245,7 +260,28 @@ export async function transitionShipment(input: {
         note: input.note ?? null,
       },
     });
-    return next;
+
+    // A cancelled shipment will never be paid for, so its unpaid invoices stop
+    // counting as revenue or as money owed. Any invoice with money against it is
+    // left alone: that needs a refund, not a void.
+    const toVoid =
+      input.to === "CANCELLED"
+        ? await tx.invoice.findMany({
+            where: { shipmentId: shipment.id, status: { in: ["DRAFT", "ISSUED", "OVERDUE"] }, amountPaid: 0 },
+            select: { id: true, reference: true, status: true },
+          })
+        : [];
+    if (toVoid.length) {
+      await tx.invoice.updateMany({
+        where: { id: { in: toVoid.map((v) => v.id) } },
+        data: { status: "VOIDED" },
+      });
+    }
+
+    return {
+      updated: await tx.shipment.findUniqueOrThrow({ where: { id: shipment.id } }),
+      voided: toVoid,
+    };
   });
 
   await recordAudit({
@@ -256,6 +292,17 @@ export async function transitionShipment(input: {
     oldValue: { status: shipment.status },
     newValue: { status: input.to },
   });
+  for (const v of voided) {
+    await recordAudit({
+      actorId: input.actorId,
+      action: "invoice.voided",
+      entityType: "Invoice",
+      entityId: v.id,
+      oldValue: { reference: v.reference, status: v.status },
+      newValue: { status: "VOIDED" },
+      reason: `Shipment ${shipment.reference} cancelled`,
+    });
+  }
 
   await notifyOnStatus(shipment.owner, shipment.reference, input.to);
   await refreshExceptions(shipment.id);
@@ -322,10 +369,6 @@ async function notifyOnStatus(
  */
 export async function issueQuote(shipmentId: string, actorId: string) {
   const estimate = await estimateShipment(shipmentId);
-  const shipment = await db.shipment.findUniqueOrThrow({
-    where: { id: shipmentId },
-    include: { items: true },
-  });
 
   const summary = summariseCharges(estimate.charges);
   const chargeTypes = await db.chargeType.findMany({
@@ -333,16 +376,24 @@ export async function issueQuote(shipmentId: string, actorId: string) {
   });
   const typeByCode = new Map(chargeTypes.map((t) => [t.code, t]));
 
-  // Allocated outside the transaction: a rollback should leave a gap in the
-  // numbering, not hand this number to the next caller.
-  const reference = await nextQuoteReference(shipmentId, shipment.reference);
+  const { quote, shipment } = await db.$transaction(async (tx) => {
+    // Quoting one shipment is serialised. Without the lock, two concurrent calls
+    // each supersede only the quotes they can see, and both leave an ISSUED quote.
+    await tx.$queryRaw`SELECT id FROM "Shipment" WHERE id = ${shipmentId} FOR UPDATE`;
+    const shipment = await tx.shipment.findUniqueOrThrow({
+      where: { id: shipmentId },
+      include: { items: true },
+    });
+    if (shipment.status === "CANCELLED") {
+      throw new DomainError("That shipment has been cancelled.");
+    }
 
-  const quote = await db.$transaction(async (tx) => {
     await tx.quote.updateMany({
       where: { shipmentId, status: { in: ["DRAFT", "ISSUED"] } },
       data: { status: "SUPERSEDED" },
     });
 
+    const reference = await nextQuoteReference(shipmentId, shipment.reference, tx);
     const created = await tx.quote.create({
       data: {
         reference,
@@ -371,7 +422,7 @@ export async function issueQuote(shipmentId: string, actorId: string) {
         })),
     });
 
-    return created;
+    return { quote: created, shipment };
   });
 
   await recordAudit({

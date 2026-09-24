@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { clientMeta } from "@/lib/auth/session";
 
@@ -16,7 +17,7 @@ export type AuditAction =
   | "shipment.status_changed" | "shipment.deleted"
   | "classification.suggested" | "classification.changed" | "classification.approved"
   | "rate.changed" | "pricing.changed" | "plan.changed"
-  | "quote.issued" | "invoice.issued" | "payment.recorded" | "payment.refunded"
+  | "quote.issued" | "invoice.issued" | "invoice.voided" | "payment.recorded" | "payment.refunded"
   | "document.uploaded" | "document.deleted"
   | "declaration.prepared" | "declaration.submitted" | "declaration.reference_changed"
   | "exception.resolved";
@@ -35,7 +36,7 @@ export interface AuditEntry {
 /** Actions where "because I said so" is not good enough. */
 const REASON_REQUIRED: AuditAction[] = [
   "classification.changed", "shipment.value_changed", "rate.changed",
-  "payment.refunded", "declaration.reference_changed", "user.role_changed",
+  "payment.refunded", "invoice.voided", "declaration.reference_changed", "user.role_changed",
 ];
 
 export function requireReason(action: AuditAction): boolean {
@@ -53,8 +54,8 @@ export async function recordAudit(entry: AuditEntry): Promise<void> {
       action: entry.action,
       entityType: entry.entityType,
       entityId: entry.entityId,
-      oldValue: entry.oldValue === undefined ? undefined : (entry.oldValue as never),
-      newValue: entry.newValue === undefined ? undefined : (entry.newValue as never),
+      oldValue: entry.oldValue === undefined ? undefined : (entry.oldValue as Prisma.InputJsonValue),
+      newValue: entry.newValue === undefined ? undefined : (entry.newValue as Prisma.InputJsonValue),
       reason: entry.reason ?? null,
       ip: meta.ip ?? null,
       userAgent: meta.userAgent ?? null,
