@@ -16,8 +16,6 @@ export type ShipmentStatus =
   | "QUOTE_READY"
   | "AWAITING_PAYMENT"
   | "PAID"
-  | "FREIGHT_IN_TRANSIT"
-  | "ARRIVED_BAHAMAS"
   | "DECLARATION_PREPARED"
   | "SUBMITTED_TO_CUSTOMS"
   | "CUSTOMS_REVIEW"
@@ -37,9 +35,9 @@ export const TRANSITIONS: Record<ShipmentStatus, ShipmentStatus[]> = {
   CLASSIFICATION_REVIEW: ["QUOTE_READY", "DOCUMENTS_REQUIRED", "CANCELLED"],
   QUOTE_READY: ["AWAITING_PAYMENT", "CLASSIFICATION_REVIEW", "CANCELLED"],
   AWAITING_PAYMENT: ["PAID", "QUOTE_READY", "CANCELLED"],
-  PAID: ["FREIGHT_IN_TRANSIT", "ARRIVED_BAHAMAS", "DECLARATION_PREPARED", "CANCELLED"],
-  FREIGHT_IN_TRANSIT: ["ARRIVED_BAHAMAS", "CANCELLED"],
-  ARRIVED_BAHAMAS: ["DECLARATION_PREPARED", "CUSTOMS_HOLD", "CANCELLED"],
+  // Kencole clears goods already in The Bahamas, so there is no freight leg:
+  // once paid, the entry is prepared.
+  PAID: ["DECLARATION_PREPARED", "CANCELLED"],
   DECLARATION_PREPARED: ["SUBMITTED_TO_CUSTOMS", "CLASSIFICATION_REVIEW", "CANCELLED"],
   SUBMITTED_TO_CUSTOMS: ["CUSTOMS_REVIEW", "CUSTOMS_HOLD", "DUTIES_DUE", "CUSTOMS_RELEASED"],
   CUSTOMS_REVIEW: ["CUSTOMS_HOLD", "DUTIES_DUE", "CUSTOMS_RELEASED"],
@@ -110,8 +108,6 @@ export const CUSTOMER_LABEL: Record<ShipmentStatus, string> = {
   QUOTE_READY: "Your estimate is ready",
   AWAITING_PAYMENT: "Payment needed to continue",
   PAID: "Payment received",
-  FREIGHT_IN_TRANSIT: "On its way to Nassau",
-  ARRIVED_BAHAMAS: "Arrived in The Bahamas",
   DECLARATION_PREPARED: "Entry prepared for customs",
   SUBMITTED_TO_CUSTOMS: "With Bahamas Customs",
   CUSTOMS_REVIEW: "Bahamas Customs is reviewing it",
@@ -124,21 +120,38 @@ export const CUSTOMER_LABEL: Record<ShipmentStatus, string> = {
   CANCELLED: "Cancelled",
 };
 
+/**
+ * A customer who collects from the port, airport or courier sees "Collected"
+ * where one who asked for delivery sees "Delivered": the same status, handed
+ * over in a different way.
+ */
+export function customerLabel(status: ShipmentStatus, deliveryRequested: boolean): string {
+  if (!deliveryRequested && status === "CUSTOMS_RELEASED") return "Released, ready to collect";
+  if (!deliveryRequested && status === "DELIVERED") return "Collected";
+  return CUSTOMER_LABEL[status];
+}
+
 /** The six milestones shown on the customer timeline, in order. */
 export const CUSTOMER_MILESTONES: { key: string; label: string; statuses: ShipmentStatus[] }[] = [
   { key: "documents", label: "Documents received", statuses: ["DOCUMENTS_RECEIVED", "UNDER_REVIEW", "CLASSIFICATION_REVIEW"] },
   { key: "review", label: "Shipment reviewed", statuses: ["QUOTE_READY"] },
   { key: "payment", label: "Payment received", statuses: ["PAID", "AWAITING_PAYMENT"] },
-  { key: "arrival", label: "Arrived in Nassau", statuses: ["ARRIVED_BAHAMAS", "FREIGHT_IN_TRANSIT"] },
   { key: "customs", label: "Customs clearance", statuses: ["DECLARATION_PREPARED", "SUBMITTED_TO_CUSTOMS", "CUSTOMS_REVIEW", "CUSTOMS_HOLD", "DUTIES_DUE"] },
   { key: "release", label: "Released", statuses: ["CUSTOMS_RELEASED"] },
   { key: "delivery", label: "Delivered", statuses: ["READY_FOR_DELIVERY", "OUT_FOR_DELIVERY", "DELIVERED"] },
 ];
 
+/** The timeline for one shipment: the last step reads "Collected" when the
+ *  customer is picking the goods up themselves. */
+export function customerMilestones(deliveryRequested: boolean) {
+  return CUSTOMER_MILESTONES.map((m) =>
+    m.key === "delivery" && !deliveryRequested ? { ...m, label: "Collected" } : m,
+  );
+}
+
 const ORDER: ShipmentStatus[] = [
   "DRAFT", "DOCUMENTS_REQUIRED", "DOCUMENTS_RECEIVED", "UNDER_REVIEW", "CLASSIFICATION_REVIEW",
-  "QUOTE_READY", "AWAITING_PAYMENT", "PAID", "FREIGHT_IN_TRANSIT", "ARRIVED_BAHAMAS",
-  "DECLARATION_PREPARED", "SUBMITTED_TO_CUSTOMS", "CUSTOMS_REVIEW", "CUSTOMS_HOLD", "DUTIES_DUE",
+  "QUOTE_READY", "AWAITING_PAYMENT", "PAID", "DECLARATION_PREPARED", "SUBMITTED_TO_CUSTOMS", "CUSTOMS_REVIEW", "CUSTOMS_HOLD", "DUTIES_DUE",
   "CUSTOMS_RELEASED", "READY_FOR_DELIVERY", "OUT_FOR_DELIVERY", "DELIVERED",
 ];
 

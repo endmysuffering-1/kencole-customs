@@ -37,7 +37,7 @@ describe("no SUBMITTED_TO_CUSTOMS without every line BROKER_APPROVED", () => {
   it("refuses to prepare the declaration either", async () => {
     const { shirts, staff, owner } = await setup();
     const shipment = await createShipment({
-      ownerId: owner.id, status: "ARRIVED_BAHAMAS", commercialInvoice: true,
+      ownerId: owner.id, status: "PAID", commercialInvoice: true,
       lines: [{ lineValue: "100.00", hsCodeId: shirts.id, status: "AI_SUGGESTED" }],
     });
     await expect(

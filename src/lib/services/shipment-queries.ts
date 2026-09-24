@@ -2,8 +2,8 @@ import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { can, isStaff, type Principal } from "@/lib/auth/rbac";
 import {
-  CUSTOMER_LABEL,
-  CUSTOMER_MILESTONES,
+  customerLabel,
+  customerMilestones,
   label,
   milestoneState,
   type ShipmentStatus,
@@ -33,8 +33,8 @@ export function invoiceScope(p: Principal): Prisma.InvoiceWhereInput {
 }
 
 /** Status wording for whoever is looking. A customer never sees an internal name. */
-export function statusLabel(status: ShipmentStatus, viewer: Principal): string {
-  return isStaff(viewer.role) ? label(status) : CUSTOMER_LABEL[status];
+export function statusLabel(status: ShipmentStatus, viewer: Principal, deliveryRequested = true): string {
+  return isStaff(viewer.role) ? label(status) : customerLabel(status, deliveryRequested);
 }
 
 export async function listShipments(
@@ -60,14 +60,14 @@ export async function listShipments(
     ...(opts.cursor ? { cursor: { id: opts.cursor }, skip: 1 } : {}),
     select: {
       id: true, reference: true, status: true, description: true, importType: true, freightMode: true,
-      goodsValue: true, currency: true, createdAt: true, updatedAt: true,
+      goodsValue: true, currency: true, createdAt: true, updatedAt: true, heldAt: true, deliveryRequested: true,
       business: { select: { id: true, legalName: true, tradingName: true } },
       _count: { select: { items: true } },
     },
   });
   const page = rows.slice(0, take);
   return {
-    shipments: page.map((s) => ({ ...s, statusLabel: statusLabel(s.status, p) })),
+    shipments: page.map((s) => ({ ...s, statusLabel: statusLabel(s.status, p, s.deliveryRequested) })),
     nextCursor: rows.length > take ? page[page.length - 1]!.id : null,
   };
 }
@@ -111,8 +111,10 @@ function shipmentView(s: ShipmentDetail, p: Principal, ruleConfirmed: Map<string
     id: s.id,
     reference: s.reference,
     status: s.status,
-    statusLabel: statusLabel(s.status, p),
-    milestones: CUSTOMER_MILESTONES.map((m) => ({ key: m.key, label: m.label, state: milestoneState(s.status, m.statuses) })),
+    statusLabel: statusLabel(s.status, p, s.deliveryRequested),
+    milestones: customerMilestones(s.deliveryRequested).map((m) => ({ key: m.key, label: m.label, state: milestoneState(s.status, m.statuses) })),
+    heldAt: s.heldAt,
+    deliveryRequested: s.deliveryRequested,
     importType: s.importType,
     freightMode: s.freightMode,
     description: s.description,
@@ -194,7 +196,7 @@ function shipmentView(s: ShipmentDetail, p: Principal, ruleConfirmed: Map<string
     history: s.history.map((h) =>
       staff
         ? { from: h.from, to: h.to, label: label(h.to), actorId: h.actorId, note: h.note, at: h.createdAt }
-        : { to: h.to, label: CUSTOMER_LABEL[h.to], at: h.createdAt },
+        : { to: h.to, label: customerLabel(h.to, s.deliveryRequested), at: h.createdAt },
     ),
     declaration: s.declaration
       ? staff

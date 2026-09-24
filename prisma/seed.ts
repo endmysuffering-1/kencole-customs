@@ -154,8 +154,7 @@ type ItemKey = keyof typeof ITEMS;
  */
 const MAIN_LINE: ShipmentStatus[] = [
   "DOCUMENTS_RECEIVED", "UNDER_REVIEW", "CLASSIFICATION_REVIEW", "QUOTE_READY",
-  "AWAITING_PAYMENT", "PAID", "FREIGHT_IN_TRANSIT", "ARRIVED_BAHAMAS",
-  "DECLARATION_PREPARED", "SUBMITTED_TO_CUSTOMS", "CUSTOMS_REVIEW",
+  "AWAITING_PAYMENT", "PAID", "DECLARATION_PREPARED", "SUBMITTED_TO_CUSTOMS", "CUSTOMS_REVIEW",
   "CUSTOMS_RELEASED", "READY_FOR_DELIVERY", "OUT_FOR_DELIVERY", "DELIVERED",
 ];
 
@@ -214,10 +213,10 @@ const SHIPMENT_SPECS: ShipmentSpec[] = [
   { party: b(1), target: "PAID", mode: "SEA", supplier: 4, items: [{ key: "shrimp", quantity: "80" }], createdDaysAgo: 14, classification: "approved", description: "Shrimp, restaurant supply" },
   { party: c(4), target: "PAID", mode: "COURIER", supplier: 0, items: [{ key: "tablet", quantity: "1" }], createdDaysAgo: 9, classification: "approved", description: "Tablet for school" },
 
-  { party: b(3), target: "FREIGHT_IN_TRANSIT", mode: "SEA", supplier: 7, items: [{ key: "tshirt", quantity: "500" }, { key: "workshirt", quantity: "120" }], createdDaysAgo: 18, classification: "approved", description: "Seasonal apparel container" },
-  { party: c(1), target: "FREIGHT_IN_TRANSIT", mode: "AIR", supplier: 6, items: [{ key: "laptop", quantity: "1" }], createdDaysAgo: 11, classification: "approved", description: "Laptop, air freight" },
+  { party: c(1), target: "PAID", mode: "AIR", supplier: 6, items: [{ key: "laptop", quantity: "1" }], createdDaysAgo: 11, classification: "approved", description: "Laptop, at the airport" },
 
-  { party: b(2), target: "ARRIVED_BAHAMAS", mode: "SEA", supplier: 5, items: [{ key: "brakepads", quantity: "120" }], createdDaysAgo: 20, classification: "approved", description: "Brake pads, bulk" },
+  { party: b(3), target: "DECLARATION_PREPARED", mode: "SEA", supplier: 7, items: [{ key: "tshirt", quantity: "500" }, { key: "workshirt", quantity: "120" }], createdDaysAgo: 18, classification: "approved", description: "Seasonal apparel container" },
+  { party: b(2), target: "CUSTOMS_REVIEW", mode: "SEA", supplier: 5, items: [{ key: "brakepads", quantity: "120" }], createdDaysAgo: 20, classification: "approved", description: "Brake pads, bulk" },
 
   { party: b(0), target: "DECLARATION_PREPARED", mode: "SEA", supplier: 2, items: [{ key: "shelving", quantity: "20" }, { key: "lockers", quantity: "6" }], createdDaysAgo: 22, classification: "approved", description: "Warehouse fittings" },
 
@@ -241,8 +240,16 @@ const SHIPMENT_SPECS: ShipmentSpec[] = [
   { party: c(4), target: "DELIVERED", mode: "AIR", supplier: 6, items: [{ key: "meds", quantity: "10" }], createdDaysAgo: 31, classification: "approved", description: "Medicaments, delivered" },
 
   { party: c(2), target: "CANCELLED", mode: "AIR", supplier: 0, items: [{ key: "tshirt", quantity: "10" }], createdDaysAgo: 15, classification: "unclassified", description: "Cancelled before submission", note: "Customer cancelled the order" },
-  { party: b(4), target: "CANCELLED", via: "AWAITING_PAYMENT", mode: "SEA", supplier: 9, items: [{ key: "shelving", quantity: "8" }], createdDaysAgo: 21, classification: "approved", description: "Cancelled after quoting", note: "Supplier could not ship" },
+  { party: b(4), target: "CANCELLED", via: "AWAITING_PAYMENT", mode: "SEA", supplier: 9, items: [{ key: "shelving", quantity: "8" }], createdDaysAgo: 21, classification: "approved", description: "Cancelled after quoting", note: "Customer withdrew after the quote" },
 ];
+
+/** Where goods wait to be cleared, by how they arrived. Kencole clears goods
+ *  already in The Bahamas; it does not move them here. */
+const HELD_AT: Record<ShipmentSpec["mode"], string> = {
+  SEA: "Nassau Container Port, Arawak Cay",
+  AIR: "Air cargo, Lynden Pindling International Airport",
+  COURIER: "Courier warehouse, Nassau",
+};
 
 // ─────────────────────────────── Costing helpers ─────────────────────────────
 
@@ -261,6 +268,7 @@ async function estimate(
     planCode?: string | null;
     brokerageDiscount?: string;
     deliveryDiscount?: string;
+    deliveryRequested: boolean;
   },
 ): Promise<LandedCostResult> {
   rateBookCache ??= await loadRateBook();
@@ -278,7 +286,7 @@ async function estimate(
     planCode: ctx.planCode ?? null,
     brokerageDiscount: ctx.brokerageDiscount ?? 0,
     deliveryDiscount: ctx.deliveryDiscount ?? 0,
-    deliveryRequested: true,
+    deliveryRequested: ctx.deliveryRequested,
   });
   return calculateLandedCost(
     {
@@ -708,6 +716,9 @@ async function main() {
 
     const approved = spec.classification === "approved";
     const path = pathTo(spec.target, spec.via);
+    // Anything that reaches a delivery status asked for delivery; otherwise
+    // personal importers tend to ask for it and businesses to collect.
+    const deliveryRequested = path.includes("READY_FOR_DELIVERY") || spec.party.kind === "consumer";
     if (path.includes("DECLARATION_PREPARED") && !approved) {
       throw new Error(`Scenario "${spec.description}" reaches a declaration without broker-approved lines.`);
     }
@@ -725,6 +736,7 @@ async function main() {
         businessId: business?.id ?? null, importType, planCode,
         brokerageDiscount: plan?.brokerageDiscount?.toString(),
         deliveryDiscount: plan?.deliveryDiscount?.toString(),
+        deliveryRequested,
       },
     );
 
@@ -733,6 +745,7 @@ async function main() {
       data: {
         reference, ownerId, businessId: business?.id ?? null, importType, freightMode: spec.mode,
         supplierId: suppliers[spec.supplier]!.id, description: spec.description,
+        heldAt: HELD_AT[spec.mode], deliveryRequested,
         goodsValue, freightCost, insuranceCost,
         status: "DRAFT", estimateJson: result as unknown as Prisma.InputJsonValue, estimatedAt: createdAt,
         createdAt, updatedAt: createdAt,

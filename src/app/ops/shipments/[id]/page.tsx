@@ -66,6 +66,7 @@ export default async function OpsShipmentPage({ params }: { params: Promise<{ id
           <h1 className="text-title font-bold">{s.statusLabel}</h1>
           <p className="mt-1 text-ink-500">
             {s.business ? s.business.name : s.owner?.fullName} · {s.owner?.email} · {FREIGHT_MODE[s.freightMode]}
+            {s.heldAt ? ` · at ${s.heldAt}` : ""} · {s.deliveryRequested ? "deliver" : "customer collects"}
             {s.supplier ? ` · ${s.supplier.name}` : ""}
             {s.trackingNumber ? ` · tracking ${s.trackingNumber}` : ""}
           </p>

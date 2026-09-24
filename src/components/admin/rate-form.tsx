@@ -124,7 +124,7 @@ export function RateForm({
 
       <fieldset className="space-y-2">
         <label className="flex items-start gap-2 text-sm">
-          <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} className="mt-0.5 h-4 w-4 rounded border-ink/30 text-ink focus:ring-ink" />
+          <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} className="mt-0.5 h-4 w-4 rounded border-ink/30 accent-ink focus:ring-ink" />
           <span>
             I have checked this rate against the current Tariff Act or Customs Management Regulations
             <span className="block text-ink-500">Leave unticked if it still needs checking. It will show as unverified wherever it is used.</span>

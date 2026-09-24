@@ -270,8 +270,6 @@ enum ShipmentStatus {
   QUOTE_READY
   AWAITING_PAYMENT
   PAID
-  FREIGHT_IN_TRANSIT
-  ARRIVED_BAHAMAS
   DECLARATION_PREPARED
   SUBMITTED_TO_CUSTOMS
   CUSTOMS_REVIEW
@@ -310,6 +308,13 @@ model Shipment {
   supplier       Supplier?      @relation(fields: [supplierId], references: [id])
   trackingNumber String?
   airwayBill     String?
+  /// Where the goods are waiting to be cleared: a port, the airport cargo shed, a
+  /// courier's warehouse. Kencole clears goods already in The Bahamas; it does not
+  /// move them here.
+  heldAt         String?
+  /// Whether the customer wants Kencole to deliver once released, rather than
+  /// collect it themselves. Decides whether a delivery fee is quoted.
+  deliveryRequested Boolean @default(false)
   originCountry  String?
   description    String?
 

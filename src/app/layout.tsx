@@ -7,7 +7,7 @@ const archivo = Archivo({ subsets: ["latin"], variable: "--font-archivo", displa
 
 export const metadata: Metadata = {
   title: { default: "Kencole Customs Brokerage", template: "%s · Kencole" },
-  description: "Licensed customs brokerage in The Bahamas. Find out what an import will really cost before it ships.",
+  description: "Licensed customs brokers in Nassau. We clear goods waiting at the port, the airport or your courier, and tell you what it costs first.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

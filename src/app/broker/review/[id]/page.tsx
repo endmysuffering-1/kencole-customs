@@ -56,6 +56,7 @@ export default async function BrokerReviewPage({
           </h1>
           <p className="text-sm text-ink-500">
             {s.business ? s.business.name : s.owner?.fullName} · {FREIGHT_MODE[s.freightMode]}
+            {s.heldAt ? ` · at ${s.heldAt}` : ""}
             {s.supplier ? ` · ${s.supplier.name}${s.supplier.country ? ` (${s.supplier.country})` : ""}` : ""}
           </p>
         </div>

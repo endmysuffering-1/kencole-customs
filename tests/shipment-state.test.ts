@@ -98,3 +98,11 @@ describe("the status graph", () => {
     }
   });
 });
+
+describe("customs brokerage, not freight forwarding", () => {
+  it("goes straight from paid to preparing the entry: there is no freight leg", () => {
+    expect(TRANSITIONS.PAID).toEqual(["DECLARATION_PREPARED", "CANCELLED"]);
+    expect(STATUSES).not.toContain("FREIGHT_IN_TRANSIT");
+    expect(STATUSES).not.toContain("ARRIVED_BAHAMAS");
+  });
+});

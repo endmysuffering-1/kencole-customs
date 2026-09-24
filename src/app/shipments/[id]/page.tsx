@@ -14,7 +14,7 @@ import { Milestones } from "@/components/milestones";
 import { UploadForm } from "@/components/shipment/upload-form";
 import { AcceptQuoteButton } from "@/components/shipment/accept-quote-button";
 import { WithdrawButton } from "@/components/shipment/withdraw-button";
-import { DOCUMENT_KIND, FREIGHT_MODE, INVOICE_STATUS } from "@/components/shipment/labels";
+import { DOCUMENT_KIND, INVOICE_STATUS } from "@/components/shipment/labels";
 import { date, dateTime, money, toPlain } from "@/lib/format";
 
 export const metadata: Metadata = { title: "Shipment" };
@@ -52,7 +52,8 @@ export default async function ShipmentPage({ params }: { params: Promise<{ id: s
           <p className="num text-sm font-semibold uppercase tracking-wider text-ink-500">{s.reference}</p>
           <h1 className="text-title font-bold">{s.statusLabel}</h1>
           <p className="mt-1 text-ink-500">
-            {s.description ?? "Shipment"} · {FREIGHT_MODE[s.freightMode]}
+            {s.description ?? "Shipment"}
+            {s.heldAt ? ` · waiting at ${s.heldAt}` : ""} · {s.deliveryRequested ? "we'll deliver" : "you'll collect"}
             {s.supplier ? ` · from ${s.supplier.name}` : ""} · opened {date(s.createdAt)}
           </p>
         </div>
@@ -72,6 +73,8 @@ export default async function ShipmentPage({ params }: { params: Promise<{ id: s
             quote={quote}
             payment={payment}
             deliveredAt={s.delivery?.deliveredAt ?? null}
+            deliveryRequested={s.deliveryRequested}
+            heldAt={s.heldAt}
           />
 
           <Card>
@@ -220,7 +223,7 @@ export default async function ShipmentPage({ params }: { params: Promise<{ id: s
 }
 
 function NextStep({
-  status, shipmentId, hasInvoiceDoc, quote, payment, deliveredAt,
+  status, shipmentId, hasInvoiceDoc, quote, payment, deliveredAt, deliveryRequested, heldAt,
 }: {
   status: string;
   shipmentId: string;
@@ -228,6 +231,8 @@ function NextStep({
   quote: { id: string; status: string; brokerApproved: boolean } | null;
   payment: { reference: string; outstanding: string; instructions?: string } | null;
   deliveredAt: string | null;
+  deliveryRequested: boolean;
+  heldAt: string | null;
 }) {
   const panel = (title: string, body: React.ReactNode, tone: "action" | "info" = "info") => (
     <Card className={tone === "action" ? "ring-2 ring-ink" : undefined}>
@@ -277,18 +282,20 @@ function NextStep({
     UNDER_REVIEW: ["We're checking your paperwork", "Once a licensed broker has classified your items, we'll send you a quote."],
     CLASSIFICATION_REVIEW: ["A broker is reviewing your items", "Each item needs a tariff code before we can quote. We'll email you when your quote is ready."],
     QUOTE_READY: ["We're finalising your quote", "A licensed broker is checking it. You'll be able to accept it here."],
-    PAID: ["Payment received, thank you", "We'll prepare your customs entry as soon as your goods reach The Bahamas."],
-    FREIGHT_IN_TRANSIT: ["On its way to Nassau", "We'll prepare your customs entry when it lands."],
-    ARRIVED_BAHAMAS: ["Arrived in The Bahamas", "We're preparing your customs entry."],
+    PAID: ["Payment received, thank you", "We're preparing your customs entry now."],
     DECLARATION_PREPARED: ["Entry prepared", "A licensed broker is about to submit it to Bahamas Customs."],
     SUBMITTED_TO_CUSTOMS: ["With Bahamas Customs", "Your entry has been submitted. Most clear within a day or two."],
     CUSTOMS_REVIEW: ["Bahamas Customs is reviewing it", "Nothing is needed from you. We'll tell you when it clears."],
     CUSTOMS_HOLD: ["Held by Bahamas Customs", "Customs has asked to look more closely. We're working on it and will tell you as soon as anything changes."],
     DUTIES_DUE: ["Duties assessed", "Bahamas Customs has assessed the duty. We'll be in touch if anything differs from your quote."],
-    CUSTOMS_RELEASED: ["Released by customs", "We're arranging delivery."],
+    CUSTOMS_RELEASED: deliveryRequested
+      ? ["Released by customs", "We're arranging delivery and will call you to confirm a time."]
+      : ["Released, ready to collect", `Your goods can be collected${heldAt ? ` from ${heldAt}` : ""}. We'll tell you what to bring.`],
     READY_FOR_DELIVERY: ["Ready for delivery", "We'll be in touch to arrange a time."],
     OUT_FOR_DELIVERY: ["Out for delivery today", "Your driver is on the way."],
-    DELIVERED: ["Delivered", deliveredAt ? `Delivered on ${date(deliveredAt)}. Thanks for importing with Kencole.` : "Thanks for importing with Kencole."],
+    DELIVERED: deliveryRequested
+      ? ["Delivered", deliveredAt ? `Delivered on ${date(deliveredAt)}. Thanks for importing with Kencole.` : "Thanks for importing with Kencole."]
+      : ["Collected", "Thanks for clearing with Kencole."],
     CANCELLED: ["Cancelled", "This shipment was cancelled. Nothing more is owed on it."],
   };
   const [title, body] = info[status] ?? ["In progress", "We'll keep you posted."];
