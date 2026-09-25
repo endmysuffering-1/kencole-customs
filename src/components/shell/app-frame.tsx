@@ -22,6 +22,7 @@ const TITLES: [RegExp, string][] = [
   [/^\/broker/, "Broker review"],
   [/^\/admin\/rates/, "Rates"],
   [/^\/admin\/users/, "Users"],
+  [/^\/admin\/import/, "Import data"],
   [/^\/calculator/, "Duty calculator"],
   [/^\/search/, "Search"],
 ];

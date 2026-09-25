@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { pageUser } from "@/lib/auth/page";
 import { can } from "@/lib/auth/rbac";
 import { listRateTable } from "@/lib/services/rate-service";
@@ -35,6 +36,11 @@ export default async function RatesPage() {
         The government charges every estimate, quote and invoice is priced from. A rate is never edited: a change closes
         the current rule and opens a new one, so an entry is always recalculated on the rate it was assessed under.
         Kencole&apos;s own fees are set in pricing rules, not here.
+        {editable && (
+          <>
+            {" "}To load many rates at once, <Link href="/admin/import?kind=rates" className="font-semibold text-sky hover:underline">import a spreadsheet</Link>.
+          </>
+        )}
       </p>
 
       <div className={`mt-6 rounded-card px-5 py-4 text-sm ${unverified ? "bg-alert-100 text-ink" : "bg-paper-card shadow-card"}`}>

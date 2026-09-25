@@ -5,6 +5,7 @@ import { db } from "@/lib/db";
 import { recordAudit } from "@/lib/audit";
 import { hashPassword, passwordProblems, verifyPassword } from "@/lib/auth/password";
 import type { registrationSchema } from "@/lib/validation/schemas";
+import { notify } from "@/lib/providers/notifications";
 import { DomainError } from "./errors";
 
 type Registration = z.infer<typeof registrationSchema>;
@@ -29,8 +30,9 @@ export async function registerUser(input: Registration) {
   const passwordHash = await hashPassword(input.password);
   const role = isBusiness ? ("BUSINESS_ADMIN" as const) : ("CONSUMER" as const);
 
+  let user;
   try {
-    return await db.$transaction(async (tx) => {
+    user = await db.$transaction(async (tx) => {
       const user = await tx.user.create({
         data: { email: input.email, fullName: input.fullName, phone: input.phone || null, passwordHash, role },
       });
@@ -57,6 +59,23 @@ export async function registerUser(input: Registration) {
     }
     throw e;
   }
+
+  await notify({
+    userId: user.id,
+    email: user.email,
+    event: "account.created",
+    subject: "Welcome to Kencole",
+    content: {
+      greetingName: user.fullName,
+      heading: isBusiness ? `Your business account for ${companyName} is ready` : "Your Kencole account is ready",
+      paragraphs: [
+        "When your goods are waiting at the port, the airport or your courier in Nassau, tell us about them and upload the seller's invoice.",
+        "A licensed customs broker checks every item, and you see the duty, VAT and our fees before you pay anything.",
+      ],
+      action: { label: "Clear a shipment", path: "/shipments/new" },
+    },
+  }).catch((e) => console.error("welcome email failed", e));
+  return user;
 }
 
 // A real hash of a random password. Checking against it when the email is

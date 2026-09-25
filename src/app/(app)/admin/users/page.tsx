@@ -10,6 +10,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { inputClass } from "@/components/ui/field";
 import { UserAccessForms } from "@/components/admin/user-access-forms";
+import { TestEmailButton } from "@/components/admin/test-email-button";
+import { email } from "@/lib/providers/notifications";
 import { date, dateTime, toPlain } from "@/lib/format";
 
 export const metadata: Metadata = { title: "Users" };
@@ -112,33 +114,42 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
           )}
         </Card>
 
-        <Card className="self-start">
-          <CardHeader title="Recent access changes" eyebrow="From the audit log" />
-          {changes.length === 0 ? (
-            <p className="px-5 py-4 text-sm text-ink-500">None yet.</p>
-          ) : (
-            <ul className="divide-y divide-ink/10 text-sm">
-              {changes.map((c) => {
-                const before = c.oldValue as { role?: Role } | null;
-                const after = c.newValue as { role?: Role } | null;
-                return (
-                  <li key={c.id} className="px-5 py-3">
-                    <span className="font-medium">{c.actor}</span>{" "}
-                    {c.action === "user.role_changed" ? (
-                      <>moved {c.subject} from {ROLE_NAMES[before!.role!]} to {ROLE_NAMES[after!.role!]}</>
-                    ) : c.action === "user.deactivated" ? (
-                      <>deactivated {c.subject}</>
-                    ) : (
-                      <>restored {c.subject}</>
-                    )}
-                    <span className="block text-ink-500">{c.reason}</span>
-                    <span className="block text-xs text-ink-500">{dateTime(c.at)}</span>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </Card>
+        <aside className="min-w-0 space-y-6 self-start">
+          <Card>
+            <CardHeader title="Customer emails" eyebrow="Mail service" />
+            <div className="space-y-3 p-5 text-sm text-ink-700">
+              <p>{email.description}</p>
+              <TestEmailButton />
+            </div>
+          </Card>
+          <Card>
+            <CardHeader title="Recent access changes" eyebrow="From the audit log" />
+            {changes.length === 0 ? (
+              <p className="px-5 py-4 text-sm text-ink-500">None yet.</p>
+            ) : (
+              <ul className="divide-y divide-ink/10 text-sm">
+                {changes.map((c) => {
+                  const before = c.oldValue as { role?: Role } | null;
+                  const after = c.newValue as { role?: Role } | null;
+                  return (
+                    <li key={c.id} className="px-5 py-3">
+                      <span className="font-medium">{c.actor}</span>{" "}
+                      {c.action === "user.role_changed" ? (
+                        <>moved {c.subject} from {ROLE_NAMES[before!.role!]} to {ROLE_NAMES[after!.role!]}</>
+                      ) : c.action === "user.deactivated" ? (
+                        <>deactivated {c.subject}</>
+                      ) : (
+                        <>restored {c.subject}</>
+                      )}
+                      <span className="block text-ink-500">{c.reason}</span>
+                      <span className="block text-xs text-ink-500">{dateTime(c.at)}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </Card>
+        </aside>
       </div>
     </main>
   );
