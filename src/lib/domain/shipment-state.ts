@@ -131,6 +131,9 @@ export function customerLabel(status: ShipmentStatus, deliveryRequested: boolean
   return CUSTOMER_LABEL[status];
 }
 
+/** Statuses where the next move is the customer's: send a document, accept, pay. */
+export const CUSTOMER_ACTION_STATUSES: ShipmentStatus[] = ["DRAFT", "DOCUMENTS_REQUIRED", "QUOTE_READY", "AWAITING_PAYMENT"];
+
 /** The six milestones shown on the customer timeline, in order. */
 export const CUSTOMER_MILESTONES: { key: string; label: string; statuses: ShipmentStatus[] }[] = [
   { key: "documents", label: "Documents received", statuses: ["DOCUMENTS_RECEIVED", "UNDER_REVIEW", "CLASSIFICATION_REVIEW"] },

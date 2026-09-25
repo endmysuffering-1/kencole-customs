@@ -2,6 +2,7 @@ import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { can, isStaff, type Principal } from "@/lib/auth/rbac";
 import {
+  CUSTOMER_ACTION_STATUSES,
   customerLabel,
   customerMilestones,
   label,
@@ -259,6 +260,45 @@ export async function getInvoice(p: Principal, id: string) {
     ...invoice,
     payments: invoice.payments.map((pay) => ({
       id: pay.id, amount: pay.amount, status: pay.status, receivedAt: pay.receivedAt, provider: pay.provider,
+    })),
+  };
+}
+
+/**
+ * The customer's Home: counts by what is happening, what they have paid the
+ * government through us, and their latest status changes.
+ */
+export async function customerOverview(p: Principal) {
+  const [shipments, paid, history] = await Promise.all([
+    db.shipment.findMany({ where: shipmentScope(p), select: { status: true } }),
+    db.invoice.aggregate({
+      where: { AND: [invoiceScope(p), { status: "PAID" }] },
+      _sum: { governmentTotal: true },
+    }),
+    db.shipmentStatusHistory.findMany({
+      where: { shipment: shipmentScope(p) },
+      orderBy: { createdAt: "desc" },
+      take: 6,
+      select: {
+        id: true, to: true, createdAt: true,
+        shipment: { select: { id: true, reference: true, description: true, deliveryRequested: true } },
+      },
+    }),
+  ]);
+  const count = (statuses: ShipmentStatus[]) => shipments.filter((s) => statuses.includes(s.status)).length;
+  return {
+    total: shipments.length,
+    active: shipments.filter((s) => s.status !== "DELIVERED" && s.status !== "CANCELLED").length,
+    needsYou: count(CUSTOMER_ACTION_STATUSES),
+    released: count(["CUSTOMS_RELEASED", "READY_FOR_DELIVERY", "OUT_FOR_DELIVERY"]),
+    completed: count(["DELIVERED"]),
+    governmentPaid: paid._sum.governmentTotal ?? 0,
+    activity: history.map((h) => ({
+      id: h.id,
+      label: customerLabel(h.to, h.shipment.deliveryRequested),
+      status: h.to,
+      at: h.createdAt,
+      shipment: { id: h.shipment.id, reference: h.shipment.reference, description: h.shipment.description },
     })),
   };
 }
