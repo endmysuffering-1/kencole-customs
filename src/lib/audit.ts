@@ -20,7 +20,7 @@ export type AuditAction =
   | "quote.issued" | "quote.accepted" | "invoice.issued" | "invoice.voided" | "payment.recorded" | "payment.refunded"
   | "document.uploaded" | "document.deleted"
   | "declaration.prepared" | "declaration.submitted" | "declaration.reference_changed"
-  | "exception.resolved";
+  | "exception.resolved" | "reference.imported";
 
 export interface AuditEntry {
   actorId?: string | null;
@@ -37,7 +37,7 @@ export interface AuditEntry {
 const REASON_REQUIRED: AuditAction[] = [
   "classification.changed", "shipment.value_changed", "rate.changed", "rate.created",
   "payment.refunded", "invoice.voided", "declaration.reference_changed", "user.role_changed",
-  "user.deactivated", "user.reactivated",
+  "user.deactivated", "user.reactivated", "reference.imported", "pricing.changed",
 ];
 
 export function requireReason(action: AuditAction): boolean {
@@ -69,6 +69,40 @@ export async function recordAudit(
       userAgent: meta.userAgent ?? null,
     },
   });
+}
+
+/**
+ * Many entries in one write, for bulk changes such as a spreadsheet import.
+ * The same rule holds: every entry needs its reason, and passing the
+ * transaction makes the changes and their records commit together.
+ */
+export async function recordAuditMany(
+  entries: AuditEntry[],
+  client: Prisma.TransactionClient = db,
+): Promise<void> {
+  if (entries.length === 0) return;
+  for (const entry of entries) {
+    if (requireReason(entry.action) && !entry.reason?.trim()) {
+      throw new Error(`A reason is required to record "${entry.action}".`);
+    }
+  }
+  const meta = await clientMeta().catch(() => ({}) as { ip?: string; userAgent?: string });
+  const CHUNK = 1000;
+  for (let i = 0; i < entries.length; i += CHUNK) {
+    await client.auditLog.createMany({
+      data: entries.slice(i, i + CHUNK).map((entry) => ({
+        actorId: entry.actorId ?? null,
+        action: entry.action,
+        entityType: entry.entityType,
+        entityId: entry.entityId,
+        oldValue: entry.oldValue === undefined ? undefined : (entry.oldValue as Prisma.InputJsonValue),
+        newValue: entry.newValue === undefined ? undefined : (entry.newValue as Prisma.InputJsonValue),
+        reason: entry.reason ?? null,
+        ip: meta.ip ?? null,
+        userAgent: meta.userAgent ?? null,
+      })),
+    });
+  }
 }
 
 /** Narrow an object to the fields that actually changed, so the log stays readable. */

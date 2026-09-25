@@ -40,6 +40,7 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
     });
     const admin = [
       ...(can(user.role, "rates:read") ? [{ href: "/admin/rates", label: "Rates", icon: "percent" as const }] : []),
+      ...(can(user.role, "rates:edit") ? [{ href: "/admin/import", label: "Import data", icon: "upload" as const }] : []),
       ...(can(user.role, "users:manage") ? [{ href: "/admin/users", label: "Users", icon: "users" as const }] : []),
     ];
     if (admin.length) sections.push({ title: "Admin", items: admin });

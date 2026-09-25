@@ -179,6 +179,65 @@ decide them. `readyForDeclaration()` gates `DECLARATION_PREPARED` and
 `CUSTOMS_BROKER` role holds `classification:approve` and `declaration:submit` —
 not even `SUPER_ADMIN`, since administering the system is not holding the licence.
 
+## Importing reference data
+
+Staff load reference data from a spreadsheet at **Import data** (`/admin/import`,
+`src/lib/services/reference-import.ts`). There are four sheets:
+
+| Sheet | Who | What a row does |
+|---|---|---|
+| Tariff codes | `rates:edit` | Adds the code, or updates its description, active flag and notes |
+| Government rates | `rates:edit` | Adds a rate for goods with none, or replaces the one in force from its start date |
+| Kencole's fees | `pricing:edit` | For each fee in the file, its rows replace that fee's list and plan prices |
+| Permits | `rates:edit` | For each code in the file, its rows replace that code's permits |
+
+- **Round trip.** Each sheet downloads as CSV in its own columns, so the
+  download is the template: edit it, save as CSV, upload. Uploading an
+  unchanged download changes nothing (a test pins this for every sheet).
+- **Check, then apply.** The check writes nothing and lists every row that
+  would be added, changed or removed, and every problem. Applying needs a
+  reason, re-checks inside one transaction, and refuses the whole file if any
+  row has a problem. The reason goes on every audit entry.
+- **Rates keep their history.** A changed rate closes the rule in force and
+  opens a new one (the same as the Rates page), audited as `rate.changed`.
+  Rates arrive unconfirmed unless the row says `confirmed` and cites its
+  source. A row cannot start in the past, cannot stack on an already scheduled
+  change, and leaving a rate out of the file never ends it.
+- **Fees leave business agreements alone.** Only list prices and plan prices
+  are replaced; rules for individual businesses are not touched.
+- **Units are the ones people write.** Rates as `35%` or dollar amounts,
+  money as `1,250.00` or `$40`, dates as `YYYY-MM-DD` (midnight in Nassau),
+  yes/no for flags. Charges and plans match by code or by name. A one-digit
+  chapter is padded (spreadsheets drop the zero of `03`), and a code such as
+  `8471.3` is refused with a hint that the spreadsheet dropped a trailing zero.
+- **Size.** Up to 20,000 rows or 4 MB a file. Locally, 8,000 tariff codes
+  import in under half a second and 8,000 rate changes in about three seconds.
+
+## Customer emails
+
+Customers are emailed when their shipment needs them or moves on
+(`statusMessage` in `src/lib/services/shipment-service.ts`): documents
+missing, quote ready, payment needed, payment received, held by customs,
+released (with where to collect it, or that delivery will be arranged), and
+delivered or collected. New accounts get a welcome email. Each message has a
+plain-text part and an HTML part in the site's colours
+(`src/lib/email-layout.ts`) with a button to the shipment. A failed send is
+logged and never blocks the change that triggered it.
+
+**Switching it on.** Until then, `EMAIL_PROVIDER=console` writes every email
+to the server log. To send real mail:
+
+1. Create an account at resend.com and add the sending domain (for example
+   `kencole.bs`). Resend lists DNS records to add at the domain's registrar;
+   wait until it shows the domain as verified.
+2. Create an API key in Resend.
+3. In Vercel → Settings → Environment Variables set `EMAIL_PROVIDER=resend`,
+   `RESEND_API_KEY` (sensitive), `EMAIL_FROM` with an address on the verified
+   domain (such as `Kencole Customs Brokerage <updates@kencole.bs>`), and
+   `APP_URL` to the site's public address so links in emails point there.
+4. Redeploy, then use **Send me a test email** on the Users page. It reports
+   Resend's own reason if anything is wrong.
+
 ## Not built yet
 
 - Staff screens for pricing rules (Kencole's fees), plans and a full audit log
@@ -190,8 +249,10 @@ not even `SUPER_ADMIN`, since administering the system is not holding the licenc
   an existing account's role but not create one
 - Resolving an exception by hand. Flags are recomputed on every change; there is
   no "dismiss with a reason" action yet
-- A production path for loading reference data (charge types, rates, HS codes,
-  plans). Today only the seed creates it, and the seed will not run in production
+- Loading charge types and plans in production. The import (below) loads tariff
+  codes, rates, fees and permits, but the charges themselves (import duty, VAT,
+  brokerage…) and the plans still come only from the seed, which will not run
+  in production. A new production database needs a one-off bootstrap for them
 - Refunds. Cancelling a shipment voids invoices with nothing paid against them;
   an invoice with money received is left alone for a refund flow to handle
 - Delivery driver interface, procurement module, CRM screens, analytics
@@ -243,6 +304,8 @@ A preview runs on Vercel (project `kencole-customs-preview`) against Supabase
 - **Environment variables** (in Vercel, secrets marked sensitive):
   `DATABASE_URL`, `MIGRATE_DATABASE_URL`, `SESSION_SECRET`,
   `STORAGE_PROVIDER=database`, `EMAIL_PROVIDER=console`, `SEED_PREVIEW=0`.
+  Emails stay in the function logs until the steps under "Customer emails"
+  are done.
 - **Access.** Vercel Authentication is on, so only members of the Vercel team
   can open it. Turn it off under Settings → Deployment Protection to share it.
   Supabase pauses free projects after a week without activity.

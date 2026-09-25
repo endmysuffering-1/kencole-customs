@@ -25,7 +25,8 @@ import type { z } from "zod";
 import { can, canAccessResource, type Capability, type Principal } from "@/lib/auth/rbac";
 import { invoiceQuote } from "./invoice-service";
 import { shipmentScope } from "./shipment-queries";
-import { notify } from "@/lib/providers/notifications";
+import { notify, type NotificationEvent } from "@/lib/providers/notifications";
+import type { EmailContent } from "@/lib/email-layout";
 
 export async function createShipment(input: {
   data: ShipmentInput;
@@ -230,7 +231,7 @@ export async function transitionShipment(input: {
       items: true,
       documents: { where: { deletedAt: null } },
       invoices: true,
-      owner: { select: { email: true, phone: true, id: true } },
+      owner: { select: { email: true, phone: true, id: true, fullName: true } },
     },
   });
   if (!shipment) throw new DomainError("Shipment not found.", 404);
@@ -311,61 +312,125 @@ export async function transitionShipment(input: {
     });
   }
 
-  await notifyOnStatus(shipment.owner, shipment.reference, input.to);
+  await notifyOnStatus(shipment, input.to);
   await refreshExceptions(shipment.id);
 
   return updated;
 }
 
-const STATUS_NOTIFICATIONS: Partial<
-  Record<ShipmentStatus, { event: Parameters<typeof notify>[0]["event"]; subject: string; body: string }>
-> = {
-  DOCUMENTS_REQUIRED: {
-    event: "documents.missing",
-    subject: "We need a document for your shipment",
-    body: "We can't start your entry until the commercial invoice is uploaded.",
-  },
-  QUOTE_READY: {
-    event: "quote.ready",
-    subject: "Your import estimate is ready",
-    body: "Open your shipment to see the estimated duty, VAT and our fees.",
-  },
-  AWAITING_PAYMENT: {
-    event: "payment.required",
-    subject: "Payment needed to continue",
-    body: "Your shipment moves as soon as the invoice is settled.",
-  },
-  CUSTOMS_HOLD: {
-    event: "customs.hold",
-    subject: "Your shipment is held by Bahamas Customs",
-    body: "We're working on it and will tell you as soon as anything changes.",
-  },
-  CUSTOMS_RELEASED: {
-    event: "customs.released",
-    subject: "Released by customs",
-    body: "Your shipment has cleared customs. We'll be in touch about collection or delivery.",
-  },
-  DELIVERED: {
-    event: "delivery.completed",
-    subject: "Delivered",
-    body: "Thanks for importing with Kencole.",
-  },
-};
+interface NotifiedShipment {
+  id: string;
+  reference: string;
+  description: string | null;
+  heldAt: string | null;
+  deliveryRequested: boolean;
+  owner: { id: string; email: string; phone: string | null; fullName: string };
+}
 
-async function notifyOnStatus(
-  owner: { id: string; email: string; phone: string | null },
-  reference: string,
-  status: ShipmentStatus,
-) {
-  const template = STATUS_NOTIFICATIONS[status];
-  if (!template) return;
+type StatusMessage = { event: NotificationEvent; subject: string; content: Omit<EmailContent, "greetingName"> };
+
+/**
+ * What the customer is told when their shipment moves. Each message says what
+ * happened, what happens next, and links to the shipment. Statuses not listed
+ * here are internal steps and send nothing.
+ */
+function statusMessage(s: NotifiedShipment, status: ShipmentStatus): StatusMessage | null {
+  const goods = s.description?.trim() || "your shipment";
+  const open = (label: string) => ({ label, path: `/shipments/${s.id}` });
+  switch (status) {
+    case "DOCUMENTS_REQUIRED":
+      return {
+        event: "documents.missing",
+        subject: "We need a document",
+        content: {
+          heading: "We need the seller's invoice",
+          paragraphs: [
+            `We can't start clearing ${goods} (${s.reference}) until the commercial invoice is uploaded.`,
+            "A PDF or a clear photo of it is fine.",
+          ],
+          action: open("Upload the invoice"),
+        },
+      };
+    case "QUOTE_READY":
+      return {
+        event: "quote.ready",
+        subject: "Your quote is ready",
+        content: {
+          heading: `Your quote for ${goods} is ready`,
+          paragraphs: [
+            "It shows the government's duty, VAT and levies and our fees, each listed separately.",
+            "Accept it to continue. Nothing is charged until you do.",
+          ],
+          action: open("See your quote"),
+        },
+      };
+    case "AWAITING_PAYMENT":
+      return {
+        event: "payment.required",
+        subject: "Payment needed to continue",
+        content: {
+          heading: "Your invoice is ready to pay",
+          paragraphs: [`We'll prepare the customs entry for ${goods} as soon as it's settled. Your shipment page has the invoice and how to pay.`],
+          action: open("View the invoice"),
+        },
+      };
+    case "PAID":
+      return {
+        event: "payment.received",
+        subject: "Payment received",
+        content: {
+          heading: "Payment received, thank you",
+          paragraphs: [`We're preparing the customs entry for ${goods} now, and we'll tell you when Bahamas Customs releases it.`],
+          action: open("Track your shipment"),
+        },
+      };
+    case "CUSTOMS_HOLD":
+      return {
+        event: "customs.hold",
+        subject: "Held by Bahamas Customs",
+        content: {
+          heading: "Bahamas Customs is holding your shipment",
+          paragraphs: ["We're working on it and will tell you as soon as anything changes. If we need something from you, it will show on your shipment page."],
+          action: open("Open your shipment"),
+        },
+      };
+    case "CUSTOMS_RELEASED":
+      return {
+        event: "customs.released",
+        subject: "Released by customs",
+        content: {
+          heading: `${goods.charAt(0).toUpperCase()}${goods.slice(1)} has cleared customs`,
+          paragraphs: s.deliveryRequested
+            ? ["Bahamas Customs has released it. We'll be in touch to arrange delivery."]
+            : [`Bahamas Customs has released it, so it's ready to collect${s.heldAt ? ` from ${s.heldAt}` : ""}. Quote your reference, ${s.reference}.`],
+          action: open("Open your shipment"),
+        },
+      };
+    case "DELIVERED":
+      return {
+        event: "delivery.completed",
+        subject: s.deliveryRequested ? "Delivered" : "Collected",
+        content: {
+          heading: s.deliveryRequested ? "Your goods have been delivered" : "Your goods have been collected",
+          paragraphs: ["Thanks for clearing with Kencole. Your invoice and documents stay on your shipment page."],
+          action: open("Open your shipment"),
+        },
+      };
+    default:
+      return null;
+  }
+}
+
+async function notifyOnStatus(shipment: NotifiedShipment, status: ShipmentStatus) {
+  const message = statusMessage(shipment, status);
+  if (!message) return;
   await notify({
-    userId: owner.id,
-    email: owner.email,
-    phone: owner.phone,
-    event: template.event,
-    subject: `${reference}: ${template.subject}`,
-    body: template.body,
+    userId: shipment.owner.id,
+    email: shipment.owner.email,
+    phone: shipment.owner.phone,
+    event: message.event,
+    subject: `${shipment.reference}: ${message.subject}`,
+    content: { ...message.content, greetingName: shipment.owner.fullName },
   }).catch((e) => console.error("notification failed", e));
 }
 
@@ -661,7 +726,7 @@ export async function acceptQuote(input: { principal: Principal; quoteId: string
   const shipment = found
     ? await db.shipment.findFirst({
         where: { AND: [shipmentScope(principal), { id: found.shipmentId }] },
-        include: { owner: { select: { id: true, email: true, phone: true } } },
+        include: { owner: { select: { id: true, email: true, phone: true, fullName: true } } },
       })
     : null;
   if (!found || !shipment || !canAccessResource(principal, shipment, "write")) {
@@ -702,7 +767,7 @@ export async function acceptQuote(input: { principal: Principal; quoteId: string
     return invoiceQuote(tx, quoteId, principal.id);
   });
 
-  await notifyOnStatus(shipment.owner, shipment.reference, "AWAITING_PAYMENT");
+  await notifyOnStatus(shipment, "AWAITING_PAYMENT");
   await refreshExceptions(shipment.id);
   return invoice;
 }
