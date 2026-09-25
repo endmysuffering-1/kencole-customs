@@ -1,23 +1,33 @@
 import { cn } from "@/lib/cn";
 
+/** DockDrop-style pill: a tinted background, the tone's colour, and a dot. */
 const TONES = {
-  neutral: "bg-paper-sunk text-ink-700",
-  ink: "bg-ink text-white",
-  good: "bg-ink-700 text-white",
-  warn: "bg-white text-alert ring-1 ring-inset ring-alert/40",
+  neutral: "bg-ink-500/10 text-ink-500",
+  ink: "bg-ocean text-white",
+  good: "bg-success-100 text-success",
+  info: "bg-sky-100 text-sky",
+  warn: "bg-warn-100 text-warn",
+  action: "bg-coral-100 text-coral-600",
   alert: "bg-alert-100 text-alert",
 } as const;
 
+export type BadgeTone = keyof typeof TONES;
+
 export function Badge({
   tone = "neutral",
+  dot = true,
   className,
+  children,
   ...props
-}: React.HTMLAttributes<HTMLSpanElement> & { tone?: keyof typeof TONES }) {
+}: React.HTMLAttributes<HTMLSpanElement> & { tone?: BadgeTone; dot?: boolean }) {
   return (
     <span
-      className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold", TONES[tone], className)}
+      className={cn("inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold", TONES[tone], className)}
       {...props}
-    />
+    >
+      {dot && <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-current" />}
+      {children}
+    </span>
   );
 }
 

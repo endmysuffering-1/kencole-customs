@@ -1,7 +1,7 @@
 import { cn } from "@/lib/cn";
 
 export const inputClass =
-  "block w-full rounded-md border-0 bg-white px-3 py-2 text-sm text-ink ring-1 ring-inset ring-ink/20 placeholder:text-ink-300 focus:ring-2 focus:ring-inset focus:ring-ink disabled:bg-paper-sunk";
+  "block w-full rounded-field border-[1.5px] border-line-strong bg-white px-3.5 py-2.5 text-sm text-ink placeholder:text-ink-300 transition focus:border-sky focus:outline-none focus:ring-[3px] focus:ring-sky/15 disabled:bg-paper-sunk";
 
 export function Field({
   label,
@@ -21,7 +21,7 @@ export function Field({
   const message = Array.isArray(error) ? error[0] : error;
   return (
     <div className={cn("space-y-1.5", className)}>
-      <label htmlFor={htmlFor} className="block text-sm font-medium text-ink">
+      <label htmlFor={htmlFor} className="block text-[0.72rem] font-semibold uppercase tracking-[0.08em] text-ink-500">
         {label}
       </label>
       {children}
@@ -37,7 +37,7 @@ export function Field({
 export function FormError({ message }: { message?: string | null }) {
   if (!message) return null;
   return (
-    <p role="alert" className="rounded-md bg-alert-100 px-3 py-2 text-sm font-medium text-alert">
+    <p role="alert" className="rounded-field bg-alert-100 px-3.5 py-2.5 text-sm font-medium text-alert">
       {message}
     </p>
   );

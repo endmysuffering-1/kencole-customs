@@ -152,7 +152,7 @@ The rules the screens keep:
   own role or access, and only an administrator can change another
   administrator's. Granting the broker role shows a warning that it carries the
   licensed capabilities.
-- Violet and teal appear only on money; yellow and orange only on buttons. Badges, links and focus rings are ink.
+- Violet and teal appear only on money; coral only on buttons and counts. Links and focus rings are sky blue.
 - The operations queues are defined in `OPS_QUEUES`
   (`src/lib/services/ops-queries.ts`). HANDOFF named "ops queues" without
   listing them; the grouping by stage is a first cut to adjust with the team.
@@ -271,34 +271,42 @@ relevant to a freight cost base.
 
 ## Design direction
 
-The layout follows the familiar online-shop pattern the owner asked for, in
-Kencole's own colours and with no borrowed branding:
+The look follows DockDrop, a sister project the owner likes, in Kencole's own
+logo and words:
 
-- **Header:** a navy top bar with the logo, a search box, and "Hello, name" with
-  the account. A lighter strip underneath holds the menu. The search
-  (`/search`) looks up tariff codes and the person's own shipments. A shipment
-  reference jumps straight to that shipment, only if they may see it.
-- **Home page:** a banner that fades into the page, cards laid over its foot
-  (estimate, track, what you'll need, business accounts), then the calculator,
-  "How it works", and a dark footer with "Back to top" on every page.
-- **Your shipments:** laid out like an order list. There are tabs (All, Needs
-  you, In progress, Completed, Cancelled). Each shipment is a card with a
-  summary strip, its status in bold, and the next action on the right.
+- **Public pages** (home, search, calculator when signed out): an ocean-blue
+  header and hero ("Your goods are here. We'll clear them.") with a "Track a
+  shipment" card, three tiles (estimate, clear a shipment, business accounts),
+  the calculator, "How it works", and an ocean footer.
+- **Sign in and create account:** two panels. The left is ocean blue with the
+  logo, headline and what Kencole does (hidden on phones). The right holds the
+  form.
+- **Signed-in pages** (`src/components/shell/`): a fixed ocean sidebar grouped
+  by role (Main for customers; Work and Admin for staff), with coral counts of
+  what needs attention. A white top bar holds the page title, the search box
+  (`/search`: tariff codes and the person's own shipments; a reference jumps
+  straight to a shipment they may see) and "+ Clear a shipment". On phones the
+  sidebar slides in from a menu button and a tab bar sits at the bottom.
+- **Customer home** (`/dashboard`): a "Welcome back" banner, four stat tiles
+  with coloured strips, "Needs you", recent activity and recent shipments.
+  **Your shipments** (`/shipments`) is a filterable table-style list.
 
-Colour has two separate jobs, and they never overlap:
+Colour has separate jobs, and they never overlap:
 
 - **Money** is coloured by who receives it: violet ("treasury", `#6B3FA0`) for
   government charges, teal (`#0E6E6B`) for Kencole's fees. Neither is used for
   anything else.
-- **Actions** use yellow ("action", `#FFD814`) for the main button on a page,
-  and orange ("buy", `#FFA41C`) for committing money: reviewing a quote, paying.
+- **Actions** use coral (`#E8501A`) for the main button on a page. Coral is
+  never used for money.
+- **Surfaces:** ocean `#0B3D59` for the dark areas, sky `#1585B5` for links and
+  focus, warm paper `#FDFAF4` behind white cards.
 
-Base is navy `#0C1B2A` on pale grey. One typeface (Archivo), with tabular
+Type: Fraunces (serif) for headings, DM Sans for everything else, with tabular
 figures on every money column.
 
-The logo is the gold Kencole script. On the site it is white on navy, since its
-gold would read as another button colour. The supplied original and the script
-that makes every version are in `design/brand/`, and the outputs in
+The logo is the gold Kencole script. On the site it is white on ocean blue,
+since its gold would read as another button colour. The supplied original and
+the script that makes every version are in `design/brand/`, and the outputs in
 `public/brand/`. The header uses a slightly thickened copy (`-small`), since
 the brush strokes go hairline below about 80px tall. Tokens are in
 `tailwind.config.ts`.

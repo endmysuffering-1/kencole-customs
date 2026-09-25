@@ -6,6 +6,7 @@ import { isStaff } from "@/lib/auth/rbac";
 import { findShipmentByReference, listShipments } from "@/lib/services/shipment-queries";
 import { searchTariff } from "@/lib/services/tariff-service";
 import { Card } from "@/components/ui/card";
+import { AdaptiveShell } from "@/components/shell/adaptive-shell";
 import { LinkButton } from "@/components/ui/button";
 import { date, money, toPlain } from "@/lib/format";
 
@@ -31,7 +32,8 @@ export default async function SearchPage({ searchParams }: { searchParams: Promi
   ]);
 
   return (
-    <main className="mx-auto max-w-5xl px-4 py-8 sm:px-6">
+    <AdaptiveShell>
+    <main className="mx-auto max-w-5xl p-4 sm:p-6">
       {!q ? (
         <p className="text-ink-500">Search tariff codes by product or number{user ? ", or your shipments by reference or item" : ""}.</p>
       ) : (
@@ -56,7 +58,7 @@ export default async function SearchPage({ searchParams }: { searchParams: Promi
             {shipments.map((s) => (
               <li key={s.id}>
                 <Link href={isStaff(user!.role) ? `/ops/shipments/${s.id}` : `/shipments/${s.id}`} className="block h-full">
-                  <Card className="h-full p-4 hover:border-ink/40">
+                  <Card className="h-full p-4 transition hover:-translate-y-px hover:border-line-hover">
                     <p className="num text-xs text-ink-500">{s.reference} · opened {date(s.createdAt)}</p>
                     <p className="mt-1 font-bold">{s.statusLabel}</p>
                     <p className="text-sm text-ink-700">{s.description ?? s.items[0]?.description ?? "Shipment"}</p>
@@ -75,14 +77,14 @@ export default async function SearchPage({ searchParams }: { searchParams: Promi
           <p className="text-sm text-ink-500">
             A licensed broker confirms the code for every item before you're quoted. This list helps you estimate.
           </p>
-          <ul className="mt-3 divide-y divide-ink/10 rounded-card border border-ink/15 bg-white">
+          <ul className="mt-3 divide-y divide-line rounded-card border border-line bg-white shadow-card">
             {codes.map((c) => (
               <li key={c.code} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
                 <span>
                   <span className="num font-bold">{c.code}</span>
                   <span className="ml-3 text-sm text-ink-700">{c.description}</span>
                 </span>
-                <LinkButton variant="secondary" href={`/?hs=${encodeURIComponent(c.code)}#estimate`} className="px-4 py-1.5 text-xs">
+                <LinkButton variant="secondary" href={`/calculator?hs=${encodeURIComponent(c.code)}`} className="px-4 py-1.5 text-xs">
                   Estimate duty
                 </LinkButton>
               </li>
@@ -100,5 +102,6 @@ export default async function SearchPage({ searchParams }: { searchParams: Promi
         </Card>
       )}
     </main>
+    </AdaptiveShell>
   );
 }

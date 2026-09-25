@@ -3,8 +3,9 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { api } from "@/lib/client/api";
+import { cn } from "@/lib/cn";
 
-export function SignOutButton() {
+export function SignOutButton({ className, children }: { className?: string; children?: React.ReactNode }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   return (
@@ -17,10 +18,9 @@ export function SignOutButton() {
         router.push("/");
         router.refresh();
       }}
-      className="rounded-sm px-2 py-1 leading-tight text-left ring-white/70 hover:ring-1"
+      className={cn("text-sm font-medium", className)}
     >
-      <span className="hidden text-xs text-white/75 sm:block">Done?</span>
-      <span className="block text-sm font-bold">Sign out</span>
+      {children ?? "Sign out"}
     </button>
   );
 }

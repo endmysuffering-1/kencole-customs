@@ -7,11 +7,17 @@
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
+  html {
+    scroll-behavior: smooth;
+  }
   body {
     @apply bg-paper text-ink;
   }
+  h1, h2, h3 {
+    @apply font-serif;
+  }
   :focus-visible {
-    @apply outline outline-2 outline-offset-2 outline-ink;
+    @apply outline outline-2 outline-offset-2 outline-sky;
   }
 }
 
@@ -20,5 +26,19 @@
   .num {
     font-variant-numeric: tabular-nums lining-nums;
     font-feature-settings: "tnum" 1, "lnum" 1;
+  }
+}
+
+@layer utilities {
+  /* A page coming into view, as in DockDrop. */
+  .page-enter {
+    animation: page-enter 0.25s ease;
+  }
+  @keyframes page-enter {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .page-enter { animation: none; }
   }
 }
